@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 workspace="/home/a/Desktop/shihoon/bunker_localization_ws"
 results_directory="${1:-${workspace}/results}"
@@ -11,6 +11,7 @@ export MPLCONFIGDIR="/tmp/bunker_localization_matplotlib"
 
 source /opt/ros/humble/setup.bash
 source "${workspace}/install/setup.bash"
+set -u
 
 ros2 launch bunker_offline_localization offline_localization.launch.py \
   results_directory:="${results_directory}" max_scans:="${max_scans}"

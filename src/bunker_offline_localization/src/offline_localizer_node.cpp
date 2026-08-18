@@ -95,14 +95,20 @@ public:
     registration_settings.registration_type =
       declare_parameter<std::string>("registration_type", "GICP");
 
-    quality_settings_.min_inliers = static_cast<std::size_t>(
-      declare_parameter<int>("min_inliers", 100));
+    const int min_inliers = declare_parameter<int>("min_inliers", 100);
+    quality_settings_.min_inliers = static_cast<std::size_t>(min_inliers);
     quality_settings_.max_final_error_per_inlier =
       declare_parameter<double>("max_final_error_per_inlier", 5.0);
     quality_settings_.max_translation_correction =
       declare_parameter<double>("max_translation_correction", 1.0);
     quality_settings_.max_rotation_correction =
       declare_parameter<double>("max_rotation_correction", 0.5235987755982988);
+    if (min_inliers < 1 || quality_settings_.max_final_error_per_inlier <= 0.0 ||
+      quality_settings_.max_translation_correction <= 0.0 ||
+      quality_settings_.max_rotation_correction <= 0.0)
+    {
+      throw std::invalid_argument("Quality-gate thresholds must be positive");
+    }
 
     configureBaseToLidar();
     const LoadedMap loaded_map = loadPlyMap(map_path_);

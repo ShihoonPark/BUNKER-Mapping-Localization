@@ -62,6 +62,7 @@ install(TARGETS
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+install(FILES README.md DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
   scripts/generate_report.py
   scripts/run_offline_smoke_test.sh
