@@ -257,7 +257,10 @@ before/after inconsistency warnings, and protected input/output separation. The 
 reports 18/18 passed. The separate plateau-label diagnostic target adds five cases covering the
 full 0-50 s height-blind window, rejection/gap boundaries, unassigned labels, non-ranked post-hoc
 pair differences, preserved historical labels/raw ordering/HEIGHT_FAIL, and the inconclusive
-conclusion. The full ROS result summary reports 40 tests, 0 errors, 0 failures, and 0 skipped (the
+conclusion. The physical-surface pose-z target adds seven cases for exact parallel-plane recovery,
+nonparallel planes, fixed label locking, measured-height leakage prevention, pair-cherry-pick
+prevention, finite outputs, and protected-input integrity. The full ROS result summary reports
+42 tests, 0 errors, 0 failures, and 0 skipped (the
 colcon total includes its CTest aggregate records). Together the suite covers transform
 direction/signs/inversion,
 quaternion normalization, TUM parsing,
@@ -590,3 +593,27 @@ IDs, and every candidate time window. `plateau_candidates_timeline.png` synchron
 GICP pitch, IMU angular-velocity y, odom speed, and the same shaded candidate intervals.
 `candidate_pair_height_diagnostics.csv` is post-hoc evidence only; it does not highlight or select
 the pair nearest 0.150 m.
+
+## Physical-surface LiDAR pose-z diagnostic
+
+This diagnostic explains spatial variation in accepted map-frame `T_map_lidar.z`; it does not
+change or rerun localization. It reads the independent 0-50 s production CSV, the frozen
+22-candidate plateau diagnostic, odom speed, and the PLY only for an XY overlay. Human-reviewed
+physical labels are locked before fitting: IDs 1-11 are `ground_before`, IDs 12-22 are
+`stage_top`, and `ground_after` is unavailable in this interval. These are the newer diagnostic
+IDs, not the historical seven-candidate physical-Gate IDs.
+
+Phase A performs deterministic Huber-IRLS sample and candidate-balanced independent planes, plane
+parallelism, a common-tilt parallel-plane model, candidate-block bootstrap, conditioning, and
+residual correlation without reading the measured height. It writes and SHA256-seals
+`blind_surface_fit_summary.json`. Only then does Phase B read the unchanged 0.150 m measurement
+and 0.050 m initial-screening tolerance for a post-hoc comparison.
+
+```bash
+ros2 run bunker_offline_localization run_surface_pose_z_diagnostic.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_surface_pose_z_diagnostic /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/imu_gicp_surface_pose_z_diagnostic.yaml
+```
+
+Outputs are isolated under `results/imu_gicp_surface_pose_z_diagnostic/`. The fitted quantity is a
+LiDAR sensor-center pose-z spatial support plane, not segmented physical floor geometry. It cannot
+establish exact map-floor tilt, absolute localization accuracy, `T_base_lidar`, lever-arm
+correction, or ground-after height.
