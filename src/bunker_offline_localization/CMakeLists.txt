@@ -54,9 +54,14 @@ target_compile_options(offline_localizer_node PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(offline_localizer_node ${PROJECT_NAME}_core)
 ament_target_dependencies(offline_localizer_node nav_msgs rclcpp sensor_msgs)
 
+add_executable(filter_timing_monitor_node src/filter_timing_monitor_node.cpp)
+target_compile_options(filter_timing_monitor_node PRIVATE -Wall -Wextra -Wpedantic)
+ament_target_dependencies(filter_timing_monitor_node geometry_msgs nav_msgs rclcpp sensor_msgs)
+
 install(TARGETS
   ${PROJECT_NAME}_core
   covariance_adapter_node
+  filter_timing_monitor_node
   offline_localizer_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -65,14 +70,18 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
+  scripts/generate_filter_comparison.py
   scripts/generate_independent_report.py
   scripts/generate_report.py
+  scripts/run_filter_comparison.sh
   scripts/run_independent_163346.sh
   scripts/run_offline_smoke_test.sh
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_test REQUIRED)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
   ament_add_gtest(transform_convention_test test/transform_convention_test.cpp)
   target_link_libraries(transform_convention_test ${PROJECT_NAME}_core)
@@ -91,6 +100,14 @@ if(BUILD_TESTING)
 
   ament_add_gtest(time_window_test test/time_window_test.cpp)
   target_link_libraries(time_window_test ${PROJECT_NAME}_core)
+
+  ament_add_test(
+    filter_comparison_test
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/filter_comparison_test.py
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    APPEND_ENV "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/scripts"
+    ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
 endif()
 
 ament_export_include_directories(include)

@@ -52,7 +52,8 @@ RejectReason evaluateRegistration(
     return RejectReason::HighError;
   }
 
-  const Eigen::Isometry3d correction = prediction.inverse() * registration.T_map_lidar;
+  const Eigen::Isometry3d correction = predictionToRegistrationDelta(
+    prediction, registration.T_map_lidar);
   if (correction.translation().norm() > settings.max_translation_correction) {
     return RejectReason::TranslationJump;
   }
@@ -60,6 +61,13 @@ RejectReason evaluateRegistration(
     return RejectReason::RotationJump;
   }
   return RejectReason::None;
+}
+
+Eigen::Isometry3d predictionToRegistrationDelta(
+  const Eigen::Isometry3d& prediction,
+  const Eigen::Isometry3d& registration)
+{
+  return prediction.inverse() * registration;
 }
 
 namespace {
@@ -103,9 +111,10 @@ ResultWriter::ResultWriter(const std::string& results_directory)
        << ",pred_x,pred_y,pred_z,pred_qx,pred_qy,pred_qz,pred_qw,pred_roll,pred_pitch,pred_yaw"
        << ",gicp_x,gicp_y,gicp_z,gicp_qx,gicp_qy,gicp_qz,gicp_qw,gicp_roll,gicp_pitch,gicp_yaw"
        << ",prediction_available,prediction_approximation,converged,accepted,reject_reason"
-       << ",iterations,num_inliers,final_error,runtime_ms"
+       << ",iterations,num_inliers,final_error,runtime_ms,filter_runtime_ms"
        << ",input_points,finite_points,downsampled_points"
-       << ",prediction_time_difference,reference_time_difference";
+       << ",prediction_time_difference,reference_time_difference"
+       << ",filter_runtime_time_difference";
   for (int row = 0; row < 6; ++row) {
     for (int column = 0; column < 6; ++column) {
       csv_ << ",hessian_" << row << column;
@@ -128,11 +137,13 @@ void ResultWriter::write(const LocalizationRecord& record)
        << ',' << record.num_inliers
        << ',' << record.final_error
        << ',' << record.runtime_ms
+       << ',' << record.filter_runtime_ms
        << ',' << record.input_points
        << ',' << record.finite_points
        << ',' << record.downsampled_points
        << ',' << record.prediction_time_difference
-       << ',' << record.reference_time_difference;
+       << ',' << record.reference_time_difference
+       << ',' << record.filter_runtime_time_difference;
   for (int row = 0; row < 6; ++row) {
     for (int column = 0; column < 6; ++column) {
       csv_ << ',' << record.hessian(row, column);

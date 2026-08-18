@@ -1,0 +1,6 @@
+localization_filter_node:
+  ros__parameters:
+    # Official robot_localization defaults, made explicit. No UKF-specific tuning is applied.
+    alpha: 0.001
+    kappa: 0.0
+    beta: 2.0

@@ -175,9 +175,11 @@ colcon test --packages-select bunker_offline_localization --event-handlers conso
 colcon test-result --verbose
 ```
 
-The 23 tests cover transform direction/signs/inversion, quaternion normalization, TUM parsing,
+The 26 tests cover transform direction/signs/inversion, quaternion normalization, TUM parsing,
 timestamp tolerance, invalid registration rejection, inclusive/disabled/invalid time windows,
-and a known-transform synthetic point cloud registered with official small_gicp.
+a known-transform synthetic point cloud registered with official small_gicp, both comparison
+launch/config paths, shared sensor fields, disabled IMU orientation, prediction-to-GICP delta
+direction, and comparison statistics.
 
 ## Run
 
@@ -226,6 +228,29 @@ Regenerate the independent report without replaying the bag:
 ```bash
 ros2 run bunker_offline_localization generate_independent_report.py --localization-csv /home/a/Desktop/shihoon/bunker_localization_ws/results/independent_163346_0_50s/localization.csv --estimated-trajectory /home/a/Desktop/shihoon/bunker_localization_ws/results/independent_163346_0_50s/estimated_traj_lidar.tum --map-ply /home/a/Desktop/shihoon/glim_real/20260814_classroom/results/classroom_150626.ply --output-directory /home/a/Desktop/shihoon/bunker_localization_ws/results/independent_163346_0_50s --window-origin-timestamp 1786692827.2210245 --window-start-sec 0.0 --window-end-sec 50.0 --expected-scans 490
 ```
+
+EKF/UKF first-scan comparison integration checks:
+
+```bash
+ros2 launch bunker_offline_localization filter_comparison.launch.py dataset:=same_bag filter_type:=ekf max_scans:=1 results_directory:=/tmp/bunker_comparison_ekf_first
+ros2 launch bunker_offline_localization filter_comparison.launch.py dataset:=same_bag filter_type:=ukf max_scans:=1 results_directory:=/tmp/bunker_comparison_ukf_first
+```
+
+Full four-run EKF/UKF comparison and combined report:
+
+```bash
+ros2 run bunker_offline_localization run_filter_comparison.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/filter_comparison
+```
+
+The comparison launch accepts `filter_type:=ekf|ukf` and
+`dataset:=same_bag|independent`. `filter_common.yaml` contains every shared state/sensor field;
+`filter_ukf.yaml` only makes the official defaults `alpha=0.001`, `kappa=0`, and `beta=2`
+explicit. No filter-specific covariance, GICP, voxel, seed, or quality-gate tuning is applied.
+
+`filter_runtime_ms` is not claimed as internal robot_localization CPU time, which the official
+nodes do not publish. It is the identically instrumented steady-clock latency from reception of
+the nearest adapted odom/IMU input to reception of filtered odometry and therefore includes ROS
+transport and scheduling.
 
 ## Results
 
@@ -285,3 +310,69 @@ The largest motion spikes occur near the main turn around 27-29 s. They remain b
 registration correction gates, but the speed/acceleration plots are plausibility diagnostics, not
 vehicle-dynamics ground truth. Since 163346 has no independent reference trajectory, these results
 support map alignment continuity and robustness but make no absolute accuracy or RMSE claim.
+
+## EKF vs UKF A/B Gate results
+
+Generated under `results/filter_comparison/`:
+
+- `same_bag/{ekf,ukf}/` and `independent/{ekf,ukf}/`: raw per-run CSV/TUM/metadata
+- `ekf_summary.json`, `ukf_summary.json`, and `comparison_manifest.json`: complete aggregate,
+  fairness hashes, reject recovery, and 27-29 s metrics
+- `filter_comparison.csv`, `prediction_comparison.csv`, and `correction_comparison.csv`
+- `comparison_report.md`
+- `predicted_xy_trajectory.png`, `predicted_yaw.png`, `prediction_translation_error.png`,
+  `prediction_yaw_error.png`, `gicp_correction_translation.png`,
+  `gicp_correction_rotation.png`, `gicp_iterations.png`, `gicp_runtime.png`,
+  `filter_runtime.png`, and `accepted_rejected_timeline.png`
+
+Same-bag pre-GICP prediction results, 867 timestamp associations per filter:
+
+| Metric | EKF | UKF |
+|---|---:|---:|
+| Translation RMSE | 0.124166 m | 8.555469 m |
+| x/y/z RMSE | 0.019356 / 0.019404 / 0.121104 m | 1.077693 / 0.893364 / 8.440174 m |
+| Yaw RMSE | 0.820115 deg | 8.421087 deg |
+| Full rotation RMSE | 2.368001 deg | 24.952337 deg |
+| Prediction translation step p95/max | 0.074405 / 0.320899 m | 1.059552 / 8.344850 m |
+| Prediction rotation step p95/max | 4.056504 / 11.232718 deg | 4.371867 / 14.596177 deg |
+
+The EKF prediction error stayed below 0.423 m. The untuned UKF first exceeded 1 m at 55.711 s
+and reached 23.559 m, dominated by z drift. The downstream same-bag localization accepted
+854/869 for EKF versus 555/869 for UKF. UKF rejections were 268 `LOW_INLIERS`, 31
+`TRANSLATION_JUMP`, and 15 `NOT_CONVERGED`; 252 late rejects had no later recovery. This is
+consistent with an unobservable/untuned 3D UKF state becoming unstable under the current sensor
+selection, but that causal interpretation requires a separate UKF-specific experiment.
+
+Independent 0-50 s results:
+
+| Metric | EKF | UKF |
+|---|---:|---:|
+| Accepted/rejected | 487 / 3 | 486 / 4 |
+| Convergence rate | 99.388% | 99.184% |
+| Inliers mean/p95/min | 2667.6 / 2937.8 / 2017 | 2667.6 / 2937.8 / 2017 |
+| Final error mean/p95/max | 335.952 / 474.103 / 943.263 | 335.477 / 474.009 / 942.409 |
+| Iterations mean/p95 | 3.914 / 8.550 | 4.020 / 9.000 |
+| GICP runtime mean/p95/max | 2.277 / 3.064 / 6.246 ms | 2.239 / 3.161 / 8.154 ms |
+| Filter latency mean/p95/max | 5.055 / 9.225 / 17.148 ms | 5.177 / 9.610 / 17.646 ms |
+
+Every independent reject recovered on the next scan. UKF added one reject at 16.329612 s; both
+filters rejected 5.909805, 16.830560, and 28.752881 s.
+
+Independent accepted-scan prediction-to-GICP corrections, mean/median/p95/max:
+
+| Metric | EKF | UKF |
+|---|---:|---:|
+| Translation [m] | 0.027672 / 0.016115 / 0.101960 / 0.210034 | 0.027979 / 0.016246 / 0.101856 / 0.248527 |
+| Full rotation [deg] | 0.616826 / 0.394448 / 2.078785 / 8.645969 | 0.637166 / 0.401625 / 2.116769 / 8.702454 |
+| Absolute yaw [deg] | 0.137936 / 0.084695 / 0.426800 / 2.356378 | 0.169090 / 0.111835 / 0.504126 / 2.262974 |
+
+In the 27-29 s large-turn interval both accepted 19/20. EKF versus UKF correction translation
+mean/p95 was 0.082964/0.166933 versus 0.085302/0.167766 m; rotation mean/p95 was
+3.184006/7.500154 versus 3.216800/7.514198 deg; iteration mean/p95 was 8.50/13.80 versus
+8.75/14.75.
+
+With differences below 1% treated as practical ties, EKF wins five of six primary criteria and
+UKF wins none. The current BUNKER initial-guess choice should remain EKF. This conclusion is only
+for the present untuned, identical-condition Gate and does not claim that EKF is generally
+superior to UKF. Any UKF-specific process-noise/state-observability tuning belongs in a separate
+experiment.

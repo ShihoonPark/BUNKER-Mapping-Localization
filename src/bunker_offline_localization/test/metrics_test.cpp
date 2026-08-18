@@ -1,7 +1,9 @@
 #include "bunker_offline_localization/metrics.hpp"
+#include "bunker_offline_localization/transforms.hpp"
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <limits>
 
 namespace bol = bunker_offline_localization;
@@ -51,4 +53,22 @@ TEST(QualityGate, RejectsTranslationAndRotationCorrections)
   EXPECT_EQ(
     bol::evaluateRegistration(rotated, Eigen::Isometry3d::Identity(), {}),
     bol::RejectReason::RotationJump);
+}
+
+TEST(PredictionCorrection, ComputesInversePredictionTimesRegistration)
+{
+  const Eigen::Isometry3d prediction = bol::makeTransform(
+    4.0, -2.0, 0.5, 0.0, 0.0, std::sin(0.3), std::cos(0.3));
+  Eigen::Isometry3d expected_delta = Eigen::Isometry3d::Identity();
+  expected_delta.translation() = Eigen::Vector3d(0.3, -0.4, 0.1);
+  expected_delta.linear() =
+    Eigen::AngleAxisd(0.2, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  const Eigen::Isometry3d registration = prediction * expected_delta;
+
+  const Eigen::Isometry3d actual_delta = bol::predictionToRegistrationDelta(
+    prediction, registration);
+  EXPECT_TRUE(actual_delta.matrix().isApprox(expected_delta.matrix(), 1.0e-12));
+  EXPECT_NEAR(actual_delta.translation().norm(), std::sqrt(0.26), 1.0e-12);
+  EXPECT_NEAR(bol::rotationAngle(actual_delta.linear()), 0.2, 1.0e-12);
+  EXPECT_NEAR(bol::rollPitchYaw(actual_delta.linear())[2], 0.2, 1.0e-12);
 }

@@ -6,6 +6,7 @@
 #include "bunker_offline_localization/time_window.hpp"
 #include "bunker_offline_localization/transforms.hpp"
 
+#include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -61,6 +62,11 @@ struct PredictionAssociation {
   double time_difference{};
 };
 
+struct TimedFilterRuntime {
+  double timestamp{};
+  double runtime_ms{};
+};
+
 class OfflineLocalizerNode : public rclcpp::Node {
 public:
   OfflineLocalizerNode()
@@ -78,8 +84,13 @@ public:
   {
     reference_tolerance_ = declare_parameter<double>("reference_timestamp_tolerance", 0.06);
     prediction_tolerance_ = declare_parameter<double>("prediction_timestamp_tolerance", 0.10);
+    filter_timing_tolerance_ = declare_parameter<double>("filter_timing_tolerance", 0.05);
+    require_filter_timing_ = declare_parameter<bool>("require_filter_timing", false);
+    filter_type_label_ = declare_parameter<std::string>("filter_type_label", "ekf");
     max_scans_ = declare_parameter<int>("max_scans", 0);
-    if (reference_tolerance_ <= 0.0 || prediction_tolerance_ <= 0.0 || max_scans_ < 0) {
+    if (reference_tolerance_ <= 0.0 || prediction_tolerance_ <= 0.0 ||
+      filter_timing_tolerance_ <= 0.0 || max_scans_ < 0)
+    {
       throw std::invalid_argument("Timestamp tolerances must be positive and max_scans nonnegative");
     }
 
@@ -148,6 +159,8 @@ public:
       "cloud_topic", "/velodyne_points");
     const std::string prediction_topic = declare_parameter<std::string>(
       "prediction_topic", "/localization/odometry/filtered");
+    const std::string filter_timing_topic = declare_parameter<std::string>(
+      "filter_timing_topic", "/localization/filter_timing");
     expected_lidar_frame_ = declare_parameter<std::string>("expected_lidar_frame", "velodyne");
 
     cloud_subscription_ = create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -156,6 +169,9 @@ public:
     prediction_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
       prediction_topic, rclcpp::QoS(500),
       std::bind(&OfflineLocalizerNode::predictionCallback, this, std::placeholders::_1));
+    filter_timing_subscription_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
+      filter_timing_topic, rclcpp::QoS(500),
+      std::bind(&OfflineLocalizerNode::filterTimingCallback, this, std::placeholders::_1));
 
     if (reference_) {
       RCLCPP_INFO(
@@ -278,6 +294,21 @@ private:
     }
   }
 
+  void filterTimingCallback(geometry_msgs::msg::Vector3Stamped::ConstSharedPtr message)
+  {
+    const double timestamp = stampSeconds(message->header.stamp);
+    if (!std::isfinite(timestamp) || !std::isfinite(message->vector.x) ||
+      message->vector.x < 0.0)
+    {
+      return;
+    }
+    filter_runtimes_.push_back(TimedFilterRuntime{timestamp, message->vector.x});
+    while (filter_runtimes_.size() > 2000U) {
+      filter_runtimes_.pop_front();
+    }
+    drainPending(false);
+  }
+
   std::optional<PredictionAssociation> nearestPrediction(const double timestamp) const
   {
     if (predictions_.empty()) {
@@ -291,11 +322,34 @@ private:
     return PredictionAssociation{*nearest, std::abs(nearest->timestamp - timestamp)};
   }
 
+  std::optional<std::pair<double, double>> nearestFilterRuntime(const double timestamp) const
+  {
+    if (filter_runtimes_.empty()) {
+      return std::nullopt;
+    }
+    const auto nearest = std::min_element(
+      filter_runtimes_.begin(), filter_runtimes_.end(),
+      [timestamp](const TimedFilterRuntime& lhs, const TimedFilterRuntime& rhs) {
+        return std::abs(lhs.timestamp - timestamp) < std::abs(rhs.timestamp - timestamp);
+      });
+    const double difference = std::abs(nearest->timestamp - timestamp);
+    if (difference > filter_timing_tolerance_) {
+      return std::nullopt;
+    }
+    return std::make_pair(nearest->runtime_ms, difference);
+  }
+
   void drainPending(const bool final)
   {
     while (!pending_scans_.empty() && !finished_) {
       const double timestamp = stampSeconds(pending_scans_.front()->header.stamp);
       if (!final && (predictions_.empty() || predictions_.back().timestamp < timestamp)) {
+        return;
+      }
+      if (!final && require_filter_timing_ &&
+        (filter_runtimes_.empty() ||
+        filter_runtimes_.back().timestamp < timestamp - prediction_tolerance_))
+      {
         return;
       }
       auto message = pending_scans_.front();
@@ -315,6 +369,8 @@ private:
     record.registration = nanTransform();
     record.reference_time_difference = std::numeric_limits<double>::quiet_NaN();
     record.prediction_time_difference = std::numeric_limits<double>::quiet_NaN();
+    record.filter_runtime_ms = std::numeric_limits<double>::quiet_NaN();
+    record.filter_runtime_time_difference = std::numeric_limits<double>::quiet_NaN();
     record.prediction_approximation = prediction_approximation_;
 
     std::optional<PoseAssociation> reference_association;
@@ -331,6 +387,11 @@ private:
       return;
     }
     record.prediction_time_difference = association->time_difference;
+    const auto filter_runtime = nearestFilterRuntime(association->prediction.timestamp);
+    if (filter_runtime) {
+      record.filter_runtime_ms = filter_runtime->first;
+      record.filter_runtime_time_difference = filter_runtime->second;
+    }
     if (association->time_difference > prediction_tolerance_) {
       record.reject_reason = RejectReason::TimestampMismatch;
       finishRecord(record);
@@ -409,6 +470,9 @@ private:
     } else {
       ++rejected_scans_;
     }
+    if (std::isfinite(record.filter_runtime_ms)) {
+      ++filter_timing_associated_scans_;
+    }
     if (max_scans_ > 0 && processed_scans_ >= static_cast<std::size_t>(max_scans_)) {
       finished_ = true;
       writeRunSummary();
@@ -426,6 +490,7 @@ private:
     std::ofstream output(results_directory_ + "/run_summary.json", std::ios::trunc);
     output << std::setprecision(17);
     output << "{\n"
+           << "  \"filter_type\": \"" << filter_type_label_ << "\",\n"
            << "  \"initialization_mode\": \"" << initialization_mode_ << "\",\n"
            << "  \"total_clouds_received\": " << total_clouds_received_ << ",\n"
            << "  \"skipped_before_window\": " << skipped_before_window_ << ",\n"
@@ -434,6 +499,8 @@ private:
            << "  \"processed_scans\": " << processed_scans_ << ",\n"
            << "  \"accepted_scans\": " << accepted_scans_ << ",\n"
            << "  \"rejected_scans\": " << rejected_scans_ << ",\n"
+           << "  \"filter_timing_associated_scans\": "
+           << filter_timing_associated_scans_ << ",\n"
            << "  \"raw_map_points\": " << raw_map_points_ << ",\n"
            << "  \"target_map_points\": " << target_map_points_ << ",\n"
            << "  \"time_window_enabled\": " << (time_window_.enabled() ? "true" : "false")
@@ -456,6 +523,9 @@ private:
   TimeWindow time_window_;
   double reference_tolerance_{};
   double prediction_tolerance_{};
+  double filter_timing_tolerance_{};
+  bool require_filter_timing_{false};
+  std::string filter_type_label_;
   int max_scans_{};
   std::string expected_lidar_frame_;
   QualityGateSettings quality_settings_;
@@ -465,6 +535,7 @@ private:
   std::unique_ptr<MapRegistrar> registrar_;
   std::unique_ptr<ResultWriter> writer_;
   std::deque<TimedPrediction> predictions_;
+  std::deque<TimedFilterRuntime> filter_runtimes_;
   std::deque<sensor_msgs::msg::PointCloud2::ConstSharedPtr> pending_scans_;
   std::optional<Eigen::Isometry3d> anchor_prediction_;
   Eigen::Isometry3d anchor_T_map_lidar_{Eigen::Isometry3d::Identity()};
@@ -476,6 +547,7 @@ private:
   std::size_t processed_scans_{0};
   std::size_t accepted_scans_{0};
   std::size_t rejected_scans_{0};
+  std::size_t filter_timing_associated_scans_{0};
   std::size_t raw_map_points_{0};
   std::size_t target_map_points_{0};
   bool finished_{false};
@@ -483,6 +555,8 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr prediction_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr
+    filter_timing_subscription_;
 };
 
 }  // namespace

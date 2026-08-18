@@ -33,6 +33,10 @@ struct QualityGateSettings {
   double max_rotation_correction{0.5235987755982988};
 };
 
+Eigen::Isometry3d predictionToRegistrationDelta(
+  const Eigen::Isometry3d& prediction,
+  const Eigen::Isometry3d& registration);
+
 RejectReason evaluateRegistration(
   const RegistrationOutput& registration,
   const Eigen::Isometry3d& prediction,
@@ -51,6 +55,8 @@ struct LocalizationRecord {
   std::size_t num_inliers{0};
   double final_error{0.0};
   double runtime_ms{0.0};
+  double filter_runtime_ms{0.0};
+  double filter_runtime_time_difference{0.0};
   std::size_t input_points{0};
   std::size_t finite_points{0};
   std::size_t downsampled_points{0};
