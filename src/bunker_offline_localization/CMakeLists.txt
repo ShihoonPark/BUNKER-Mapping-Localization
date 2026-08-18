@@ -74,12 +74,14 @@ install(PROGRAMS
   scripts/generate_filter_comparison.py
   scripts/generate_imu_gicp_physical_gate.py
   scripts/generate_independent_report.py
+  scripts/generate_plateau_label_diagnostic.py
   scripts/generate_planar_ekf_gate_report.py
   scripts/generate_report.py
   scripts/run_filter_comparison.sh
   scripts/run_imu_gicp_physical_gate.sh
   scripts/run_independent_163346.sh
   scripts/run_offline_smoke_test.sh
+  scripts/run_plateau_label_diagnostic.sh
   scripts/run_planar_ekf_gate.sh
   DESTINATION lib/${PROJECT_NAME})
 
@@ -128,6 +130,13 @@ if(BUILD_TESTING)
     imu_gicp_physical_gate_test
     COMMAND ${Python3_EXECUTABLE} -m pytest -q
       ${CMAKE_CURRENT_SOURCE_DIR}/test/imu_gicp_physical_gate_test.py
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
+
+  ament_add_test(
+    plateau_label_diagnostic_test
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/plateau_label_diagnostic_test.py
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
     ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
 endif()

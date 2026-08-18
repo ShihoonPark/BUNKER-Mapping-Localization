@@ -39,6 +39,8 @@ lag_search:
   step_sec: 0.01
 
 plateau_detection:
+  # Frozen historical height-Gate search window. The diagnostic-only full-window search below
+  # does not alter or rerun the preserved HEIGHT_FAIL labeling.
   search_start_sec: 20.0
   search_end_sec: 40.0
   smoothing_window_samples: 5
@@ -89,3 +91,14 @@ height_estimation:
   minimum_samples_per_window: 5
   bootstrap_samples: 500
   bootstrap_seed: 163346
+
+plateau_label_diagnostic:
+  enabled: true
+  valid_start_sec: 0.0
+  valid_end_sec: 50.0
+  source_height_gate_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate_stage_150mm
+  output_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_plateau_label_diagnostic
+  measured_height_used_for_candidate_detection: false
+  assign_new_physical_labels: false
+  map_max_plot_points: 50000
+  conclusion: height validation currently inconclusive because physical plateau labels are not independently established

@@ -64,8 +64,9 @@ outside the Gate and are neither fused nor registered.
 - ROS 2 Humble and `robot_localization/ekf_node` from `/opt/ros/humble`
 - Ubuntu/ROS-compatible PCL 1.12 for binary PLY loading
 - Eigen3 and OpenMP
-- Python 3 with NumPy, PyYAML, Matplotlib, `rosbag2_py`, and ROS message Python bindings for the
-  read-only physical-consistency report
+- Python 3 with NumPy, PyYAML, Matplotlib, Open3D, `rosbag2_py`, and ROS message Python bindings
+  for the read-only physical-consistency and plateau-label diagnostic reports. Open3D reads only
+  the PLY XY points used by the diagnostic overlay; it is not used for registration.
 - Official `small_gicp` Git submodule at `third_party/small_gicp`
 - Upstream: `https://github.com/koide3/small_gicp.git`
 - Pinned upstream commit: `aea131352e0d362d3e579a334c477cfafa5ee5eb` (`small_gicp` 1.0.1)
@@ -147,6 +148,23 @@ confidence interval. The measured carpet-to-flat-stage vertical height is 0.150 
 tolerance is explicitly an initial physical-consistency screening threshold chosen with the
 0.20 m map/scan voxel resolution and manual measurement in mind, not a calibrated localization
 accuracy threshold. Raw absolute and relative errors are reported independently of the threshold.
+
+### Diagnostic-only plateau-label review
+
+The preserved 20-40 s height Gate and its `HEIGHT_FAIL` are not reclassified or overwritten.
+`plateau_label_diagnostic` separately searches the complete independent valid interval 0-50 s
+with the same z-rate, pitch-rate, duration, consecutive-acceptance, and timestamp-gap rules. It
+does not receive the measured height during detection and assigns every candidate the physical
+label `UNASSIGNED`; it does not automatically select ground-before, stage-top, or ground-after.
+
+The measured 0.150 m is introduced only after all candidates are frozen. Every candidate-pair raw
+median-z difference and measured-height error is emitted in natural candidate-ID order, never
+ranked by height error and never used for selection. The report retains the historical fact that
+the earlier temporal partition called candidate 4 stage-top and candidates 5-7 ground-after, plus
+their raw median-z ordering. The 8.206 deg fitted ground-plane slope is recorded as a warning that
+those surface labels are not independently established. Therefore the diagnostic conclusion is
+`height validation currently inconclusive because physical plateau labels are not independently
+established`; this is not a production-localization failure decision.
 
 ## Independent-drive initialization and time window
 
@@ -236,9 +254,12 @@ averaging; rejected/gap exclusion; axis/sign correlation; synthetic lag recovery
 ground-plane fitting; known synthetic stage height; unavailable physical-height PENDING behavior;
 height-blind temporal partitioning, ambiguous-candidate refusal, raw screening errors,
 before/after inconsistency warnings, and protected input/output separation. The direct target
-reports 18/18 passed; the full ROS
-result summary reports 38 tests, 0 errors, 0 failures, and 0 skipped (the colcon total includes its
-CTest aggregate records). Together the suite covers transform direction/signs/inversion,
+reports 18/18 passed. The separate plateau-label diagnostic target adds five cases covering the
+full 0-50 s height-blind window, rejection/gap boundaries, unassigned labels, non-ranked post-hoc
+pair differences, preserved historical labels/raw ordering/HEIGHT_FAIL, and the inconclusive
+conclusion. The full ROS result summary reports 40 tests, 0 errors, 0 failures, and 0 skipped (the
+colcon total includes its CTest aggregate records). Together the suite covers transform
+direction/signs/inversion,
 quaternion normalization, TUM parsing,
 timestamp tolerance, invalid registration rejection, inclusive/disabled/invalid time windows,
 a known-transform synthetic point cloud registered with official small_gicp, both comparison
@@ -324,6 +345,13 @@ Regenerate it directly without changing or rerunning localization:
 
 ```bash
 ros2 run bunker_offline_localization generate_imu_gicp_physical_gate.py --config /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/imu_gicp_physical_gate.yaml --output-directory /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate_stage_150mm
+```
+
+Run the separate diagnostic-only 0-50 s plateau-label review. It reads the existing production
+CSV, independent bag sensors, PLY, and preserved height result; it does not replay localization:
+
+```bash
+ros2 run bunker_offline_localization run_plateau_label_diagnostic.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_plateau_label_diagnostic /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/imu_gicp_physical_gate.yaml
 ```
 
 The comparison launch accepts `filter_type:=ekf|ukf` and
@@ -537,3 +565,28 @@ possible causes. `HEIGHT_FAIL` is the raw measured-versus-estimated result under
 height-blind temporal partition; it is not an absolute localization-accuracy claim. See
 `results/imu_gicp_physical_gate_stage_150mm/physical_validation_report.md` and the eight separate
 diagnostic plots for the full evidence.
+
+## Plateau-label diagnostic results
+
+Generated separately under `results/imu_gicp_plateau_label_diagnostic/`; the production
+localization, map, bag, GLIM inputs, and preserved height-Gate directory passed before/after
+fingerprint checks.
+
+- Search: complete independent valid interval 0.0-50.0 s, with no measured-height input
+- Inputs: 490 localization rows (486 accepted), 6,919 IMU messages, 2,417 odometry messages, and
+  all 13,058 PLY vertices
+- Detected: 22 stable candidates; every physical label remains `UNASSIGNED`
+- Post-hoc table: all 231 candidate pairs in candidate-ID order; every selection flag is false
+- Historical result retained: candidate 4 stage-top and candidates 5-7 ground-after
+- Historical raw median-z ordering: candidate 4 (`0.133461 m`) < candidate 5 (`0.201568 m`) <
+  candidate 6 (`0.268985 m`) < candidate 7 (`0.281900 m`)
+- Warning retained: fitted ground-plane slope `8.206 deg` makes those surface labels suspect
+- Preserved status: `HEIGHT_FAIL`; this is not interpreted as production-localization failure
+- Diagnostic conclusion: `height validation currently inconclusive because physical plateau
+  labels are not independently established`
+
+`plateau_candidates_map_overlay.png` overlays the PLY, accepted XY trajectory, large diagnostic
+IDs, and every candidate time window. `plateau_candidates_timeline.png` synchronizes GICP z,
+GICP pitch, IMU angular-velocity y, odom speed, and the same shaded candidate intervals.
+`candidate_pair_height_diagnostics.csv` is post-hoc evidence only; it does not highlight or select
+the pair nearest 0.150 m.
