@@ -1,0 +1,44 @@
+covariance_adapter:
+  ros__parameters:
+    use_sim_time: true
+    odom_input: /odom
+    imu_input: /imu/data
+    odom_output: /localization/odom_with_covariance
+    imu_output: /localization/imu_with_covariance
+    # These are initial tuning assumptions, not measured sensor covariances.
+    # Diagonal order for odometry: x y z roll pitch yaw.
+    odom_pose_covariance_diagonal: [0.0225, 0.0225, 1000.0, 1000.0, 1000.0, 0.01]
+    odom_twist_covariance_diagonal: [0.04, 1000.0, 1000.0, 1000.0, 1000.0, 0.04]
+    # Diagonal order: angular velocity x y z.
+    imu_angular_velocity_covariance_diagonal: [1.0, 1.0, 0.0009]
+
+offline_localizer:
+  ros__parameters:
+    use_sim_time: true
+    map_path: /home/a/Desktop/shihoon/glim_real/20260814_classroom/results/classroom_150626.ply
+    reference_path: /home/a/Desktop/shihoon/glim_real/20260814_classroom/results/dump_150626_direct_20260814_222719/traj_lidar.txt
+    results_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results
+    cloud_topic: /velodyne_points
+    prediction_topic: /localization/odometry/filtered
+    expected_lidar_frame: velodyne
+
+    registration_type: GICP
+    num_threads: 4
+    map_voxel_resolution: 0.20
+    scan_voxel_resolution: 0.20
+    num_neighbors: 20
+    max_correspondence_distance: 1.0
+    max_iterations: 30
+
+    min_inliers: 100
+    max_final_error_per_inlier: 5.0
+    max_translation_correction: 1.0
+    max_rotation_correction: 0.5235987755982988
+    reference_timestamp_tolerance: 0.06
+    prediction_timestamp_tolerance: 0.10
+    max_scans: 0
+
+    base_to_lidar:
+      available: false
+      # Explicit Phase 1 test-only approximation. Production default in code is false.
+      allow_identity_for_phase1_smoke_test: true
