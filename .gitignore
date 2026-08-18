@@ -1,0 +1,8 @@
+build/
+install/
+log/
+results/
+CMakeFiles/
+.pytest_cache/
+__pycache__/
+*.pyc
