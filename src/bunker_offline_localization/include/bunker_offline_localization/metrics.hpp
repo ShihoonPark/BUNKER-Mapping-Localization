@@ -55,6 +55,7 @@ struct LocalizationRecord {
   std::size_t num_inliers{0};
   double final_error{0.0};
   double runtime_ms{0.0};
+  double core_localization_latency_ms{0.0};
   double filter_runtime_ms{0.0};
   double filter_runtime_time_difference{0.0};
   double correction_translation_m{0.0};
@@ -67,6 +68,16 @@ struct LocalizationRecord {
   double prediction_time_difference{0.0};
   double reference_time_difference{0.0};
   Eigen::Matrix<double, 6, 6> hessian{Eigen::Matrix<double, 6, 6>::Zero()};
+};
+
+class LatencyWriter {
+public:
+  LatencyWriter(const std::string& results_directory, double origin_timestamp);
+  void write(const LocalizationRecord& record, std::size_t processed_index);
+
+private:
+  double origin_timestamp_{};
+  std::ofstream csv_;
 };
 
 class ResultWriter {

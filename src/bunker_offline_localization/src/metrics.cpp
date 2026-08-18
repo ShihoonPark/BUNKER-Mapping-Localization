@@ -113,6 +113,7 @@ ResultWriter::ResultWriter(const std::string& results_directory)
        << ",gicp_x,gicp_y,gicp_z,gicp_qx,gicp_qy,gicp_qz,gicp_qw,gicp_roll,gicp_pitch,gicp_yaw"
        << ",prediction_available,prediction_approximation,converged,accepted,reject_reason"
        << ",iterations,num_inliers,final_error,runtime_ms,filter_runtime_ms"
+       << ",core_localization_latency_ms"
        << ",correction_translation_m,correction_roll_rad,correction_pitch_rad"
        << ",correction_yaw_rad"
        << ",input_points,finite_points,downsampled_points"
@@ -141,6 +142,7 @@ void ResultWriter::write(const LocalizationRecord& record)
        << ',' << record.final_error
        << ',' << record.runtime_ms
        << ',' << record.filter_runtime_ms
+       << ',' << record.core_localization_latency_ms
        << ',' << record.correction_translation_m
        << ',' << record.correction_roll_rad
        << ',' << record.correction_pitch_rad
@@ -170,6 +172,38 @@ void ResultWriter::write(const LocalizationRecord& record)
                 << quaternion.z() << ' ' << quaternion.w() << '\n';
     trajectory_.flush();
   }
+}
+
+LatencyWriter::LatencyWriter(
+  const std::string& results_directory, const double origin_timestamp)
+: origin_timestamp_(origin_timestamp)
+{
+  std::filesystem::create_directories(results_directory);
+  csv_.open(results_directory + "/continuous_latency.csv", std::ios::trunc);
+  if (!csv_) {
+    throw std::runtime_error("Failed to open continuous latency CSV under: " + results_directory);
+  }
+  csv_ << std::setprecision(17);
+  csv_ << "timestamp,bag_relative_time,processed_index,status,registration_runtime_ms"
+       << ",core_localization_latency_ms,inliers,iterations,source_points,input_points\n";
+}
+
+void LatencyWriter::write(
+  const LocalizationRecord& record, const std::size_t processed_index)
+{
+  csv_ << record.timestamp
+       << ',' << record.timestamp - origin_timestamp_
+       << ',' << processed_index
+       << ',' << (record.accepted ? std::string("ACCEPTED") :
+    std::string("REJECTED_") + toString(record.reject_reason))
+       << ',' << record.runtime_ms
+       << ',' << record.core_localization_latency_ms
+       << ',' << record.num_inliers
+       << ',' << record.iterations
+       << ',' << record.downsampled_points
+       << ',' << record.input_points
+       << '\n';
+  csv_.flush();
 }
 
 }  // namespace bunker_offline_localization

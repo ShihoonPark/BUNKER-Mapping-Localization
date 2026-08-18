@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace bunker_offline_localization {
 
@@ -30,6 +31,24 @@ struct RegistrationOutput {
   Eigen::Matrix<double, 6, 6> hessian{Eigen::Matrix<double, 6, 6>::Zero()};
   double runtime_ms{0.0};
   std::size_t source_downsampled_points{0};
+  small_gicp::PointCloud::Ptr preprocessed_source;
+};
+
+struct ReconstructedCorrespondence {
+  std::size_t source_index{};
+  std::size_t target_index{};
+  Eigen::Vector3d source_lidar{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d registered_source_map{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d target_map{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d residual_map{Eigen::Vector3d::Zero()};
+  double distance_m{};
+  double mahalanobis_error_contribution{};
+};
+
+struct CorrespondenceReconstruction {
+  std::string method{"posthoc_final_transform_correspondence_reconstruction"};
+  std::size_t candidate_count{};
+  std::vector<ReconstructedCorrespondence> valid;
 };
 
 class MapRegistrar {
@@ -48,6 +67,9 @@ public:
     const Eigen::Isometry3d& init_T_map_lidar) const;
 
   std::size_t targetPointCount() const;
+  const small_gicp::PointCloud& targetCloud() const;
+  CorrespondenceReconstruction reconstructFinalCorrespondences(
+    const RegistrationOutput& registration) const;
   const RegistrationSettings& settings() const;
 
 private:

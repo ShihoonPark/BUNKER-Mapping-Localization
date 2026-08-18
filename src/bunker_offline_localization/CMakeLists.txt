@@ -15,6 +15,9 @@ find_package(OpenMP REQUIRED)
 find_package(PCL 1.12 REQUIRED COMPONENTS common io)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 set(SMALL_GICP_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/small_gicp")
 if(NOT EXISTS "${SMALL_GICP_VENDOR_DIR}/include/small_gicp/registration/registration.hpp")
@@ -29,6 +32,8 @@ target_link_libraries(small_gicp_vendor INTERFACE Eigen3::Eigen OpenMP::OpenMP_C
 
 add_library(${PROJECT_NAME}_core
   src/accepted_pose_predictor.cpp
+  src/diagnostic_utils.cpp
+  src/gicp_diagnostics.cpp
   src/map_loader.cpp
   src/metrics.cpp
   src/reference_trajectory.cpp
@@ -43,7 +48,8 @@ target_include_directories(${PROJECT_NAME}_core SYSTEM PUBLIC ${PCL_INCLUDE_DIRS
 target_compile_options(${PROJECT_NAME}_core PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(${PROJECT_NAME}_core
   Eigen3::Eigen small_gicp_vendor ${PCL_LIBRARIES})
-ament_target_dependencies(${PROJECT_NAME}_core sensor_msgs)
+ament_target_dependencies(${PROJECT_NAME}_core
+  geometry_msgs nav_msgs rclcpp sensor_msgs std_msgs tf2_ros visualization_msgs)
 
 add_executable(covariance_adapter_node src/covariance_adapter_node.cpp)
 target_include_directories(covariance_adapter_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -53,7 +59,7 @@ ament_target_dependencies(covariance_adapter_node nav_msgs rclcpp sensor_msgs)
 add_executable(offline_localizer_node src/offline_localizer_node.cpp)
 target_compile_options(offline_localizer_node PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(offline_localizer_node ${PROJECT_NAME}_core)
-ament_target_dependencies(offline_localizer_node nav_msgs rclcpp sensor_msgs)
+ament_target_dependencies(offline_localizer_node geometry_msgs nav_msgs rclcpp sensor_msgs)
 
 add_executable(filter_timing_monitor_node src/filter_timing_monitor_node.cpp)
 target_compile_options(filter_timing_monitor_node PRIVATE -Wall -Wextra -Wpedantic)
@@ -68,11 +74,12 @@ install(TARGETS
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
-install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config launch rviz DESTINATION share/${PROJECT_NAME})
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
   scripts/generate_filter_comparison.py
   scripts/generate_gicp_vertical_observability_diagnostic.py
+  scripts/generate_gicp_correspondence_rviz_diagnostic.py
   scripts/generate_imu_gicp_physical_gate.py
   scripts/generate_independent_report.py
   scripts/generate_plateau_label_diagnostic.py
@@ -82,6 +89,8 @@ install(PROGRAMS
   scripts/generate_surface_pose_z_diagnostic.py
   scripts/run_filter_comparison.sh
   scripts/run_gicp_vertical_observability_diagnostic.sh
+  scripts/run_gicp_correspondence_runtime_gate.sh
+  scripts/verify_gicp_rviz_topics.py
   scripts/run_imu_gicp_physical_gate.sh
   scripts/run_independent_163346.sh
   scripts/run_offline_smoke_test.sh
@@ -116,6 +125,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(prediction_policy_test test/prediction_policy_test.cpp)
   target_link_libraries(prediction_policy_test ${PROJECT_NAME}_core)
+
+  ament_add_gtest(gicp_diagnostics_test test/gicp_diagnostics_test.cpp)
+  target_link_libraries(gicp_diagnostics_test ${PROJECT_NAME}_core)
 
   ament_add_test(
     filter_comparison_test
@@ -167,8 +179,17 @@ if(BUILD_TESTING)
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
     APPEND_ENV "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/scripts"
     ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
+
+  ament_add_test(
+    gicp_correspondence_rviz_diagnostic_test
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/gicp_correspondence_rviz_diagnostic_test.py
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    APPEND_ENV "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/scripts"
+    ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
 endif()
 
 ament_export_include_directories(include)
-ament_export_dependencies(Eigen3 sensor_msgs)
+ament_export_dependencies(
+  Eigen3 geometry_msgs nav_msgs rclcpp sensor_msgs std_msgs tf2_ros visualization_msgs)
 ament_package()

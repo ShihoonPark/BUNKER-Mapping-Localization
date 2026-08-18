@@ -687,3 +687,72 @@ ros2 run bunker_offline_localization run_gicp_vertical_observability_diagnostic.
 Outputs are isolated under `results/gicp_vertical_observability_diagnostic/` and include the
 source-level Hessian convention audit, all accepted scan/candidate/group metrics, XY-only ordered
 mapping association, nine diagnostic figures, input fingerprints, and RViz handoff metadata.
+
+## Continuous GICP RViz and 20 ms runtime Gate
+
+This Gate reuses the production adapter, EKF, accepted-pose predictor, scan preprocessing,
+small_gicp wrapper, and quality gate. The 22 plateau candidates are diagnostic metadata only:
+continuous mode localizes every LiDAR scan in the independent 0-50 s interval. Rejected scans
+publish status but are not appended to `/gicp_path`.
+
+small_gicp does not expose final factor indices through its public result API. Correspondence
+artifacts are therefore explicitly named
+`posthoc_final_transform_correspondence_reconstruction`, never exact internal optimizer
+correspondences. They retain the actual voxelized source used by production and reuse the same
+once-voxelized target, KD-tree, nearest-target rule, and unchanged 1.0 m distance gate. The five
+fixed handoff scans use the full-6DoF poses and quality metrics from the protected production CSV;
+this keeps the audited `-0.297 m` anomaly fixed even if a new asynchronous replay reaches another
+local basin. Visualization line sampling is deterministic and capped at 200; all valid
+correspondences remain in the CSV and statistics.
+
+Published topics are `/map_cloud` (`map`, one transient-local publish), `/raw_scan` (`velodyne`),
+`/registered_scan` (`map`), `/gicp_pose` (`map`), `/gicp_path` (`map`), `/prediction_pose`
+(`map`), and `/gicp_correspondences` (`map`). The only diagnostic TF is
+`map -> localized_velodyne`; no uncalibrated `map -> base_link` is fabricated. The checked-in RViz
+config provides map/raw/registered clouds, accepted path, current/predicted poses,
+correspondences, and TF. Top and side views can be selected with the standard RViz view controls.
+
+The primary `core_localization_latency_ms` uses a steady clock from callback processing through
+prediction access, source preprocessing, registration, quality gate, and final-pose readiness.
+CSV I/O, post-hoc correspondence reconstruction, ROS publication, marker serialization, and RViz
+rendering are outside this interval. `registration_runtime_ms` remains a separate registration-only
+measurement. Strict PASS requires every reviewed scan to be at most 20.0 ms and is an offline lab-PC
+engineering Gate, not hard-real-time certification.
+
+Release build and full tests:
+
+```bash
+cd /home/a/Desktop/shihoon/bunker_localization_ws && source /opt/ros/humble/setup.bash && colcon build --packages-select bunker_offline_localization --cmake-args -DCMAKE_BUILD_TYPE=Release && source install/setup.bash && colcon test --packages-select bunker_offline_localization --event-handlers console_direct+ && colcon test-result --verbose
+```
+
+Headless all-scan performance Gate and five fixed correspondence snapshots:
+
+```bash
+cd /home/a/Desktop/shihoon/bunker_localization_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 run bunker_offline_localization run_gicp_correspondence_runtime_gate.sh
+```
+
+Continuous RViz:
+
+```bash
+cd /home/a/Desktop/shihoon/bunker_localization_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch bunker_offline_localization gicp_rviz_diagnostic.launch.py mode:=continuous
+```
+
+Hold the fixed largest-negative-z anomaly for inspection:
+
+```bash
+cd /home/a/Desktop/shihoon/bunker_localization_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch bunker_offline_localization gicp_rviz_diagnostic.launch.py mode:=selected selected_role:=largest_negative_dz
+```
+
+Use `launch_rviz:=false` for a headless publisher run and set
+`publish_correspondences_every_n_scans:=0` to disable only correspondence visualization. Neither
+option skips map matching. The measured 490-scan run produced 486 accepted and 4 rejected poses,
+matching the protected production result. Callback-arrival-to-final-pose core latency
+mean/p95/p99/max was `11.144/27.393/35.207/36.369 ms`; 104 scans (21.224%) exceeded 20 ms, so the
+strict Gate is `FAIL`. Registration-only mean/p95/p99/max was
+`2.249/3.170/4.836/7.661 ms`. The contrast identifies EKF prediction availability/queue wait,
+not small_gicp computation, as the dominant deadline issue in this offline ROS replay. All seven
+required topics and frame IDs were received by the headless integration verifier. The separate
+50-scan visualization-publisher run recorded secondary core mean/p95/p99/max
+`22.903/35.493/37.359/39.040 ms`; it is not the primary Gate and does not include RViz GUI
+rendering. Outputs are isolated under
+`results/gicp_correspondence_rviz_diagnostic/`.

@@ -1,4 +1,6 @@
 #include "bunker_offline_localization/accepted_pose_predictor.hpp"
+#include "bunker_offline_localization/diagnostic_utils.hpp"
+#include "bunker_offline_localization/gicp_diagnostics.hpp"
 #include "bunker_offline_localization/map_loader.hpp"
 #include "bunker_offline_localization/metrics.hpp"
 #include "bunker_offline_localization/reference_trajectory.hpp"
@@ -15,6 +17,7 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <deque>
@@ -66,6 +69,11 @@ struct PredictionAssociation {
 struct TimedFilterRuntime {
   double timestamp{};
   double runtime_ms{};
+};
+
+struct PendingScan {
+  sensor_msgs::msg::PointCloud2::ConstSharedPtr message;
+  std::chrono::steady_clock::time_point callback_start;
 };
 
 class OfflineLocalizerNode : public rclcpp::Node {
@@ -153,8 +161,98 @@ public:
     const LoadedMap loaded_map = loadPlyMap(map_path_);
     registrar_ = std::make_unique<MapRegistrar>(loaded_map.points, registration_settings);
     writer_ = std::make_unique<ResultWriter>(results_directory_);
+    latency_writer_ = std::make_unique<LatencyWriter>(
+      results_directory_, time_window_.originTimestamp());
     raw_map_points_ = loaded_map.raw_point_count;
     target_map_points_ = registrar_->targetPointCount();
+
+    GicpDiagnosticSettings diagnostic_settings;
+    diagnostic_settings.enabled = declare_parameter<bool>("diagnostics.enabled", false);
+    diagnostic_settings.publish_visualization = declare_parameter<bool>(
+      "diagnostics.publish_visualization", false);
+    diagnostic_settings.publish_correspondences_every_n_scans = declare_parameter<int>(
+      "diagnostics.publish_correspondences_every_n_scans", 1);
+    const int maximum_lines = declare_parameter<int>(
+      "diagnostics.rviz_max_correspondence_lines", 200);
+    if (maximum_lines < 1) {
+      throw std::invalid_argument("diagnostics.rviz_max_correspondence_lines must be positive");
+    }
+    diagnostic_settings.rviz_max_correspondence_lines =
+      static_cast<std::size_t>(maximum_lines);
+    diagnostic_settings.output_directory = declare_parameter<std::string>(
+      "diagnostics.output_directory", results_directory_);
+    diagnostic_settings.map_frame = declare_parameter<std::string>(
+      "diagnostics.map_frame", "map");
+    diagnostic_settings.localized_lidar_frame = declare_parameter<std::string>(
+      "diagnostics.localized_lidar_frame", "localized_velodyne");
+    diagnostic_settings.selected_timestamp_tolerance_sec = declare_parameter<double>(
+      "diagnostics.selected_timestamp_tolerance_sec", 0.001);
+    diagnostic_settings.hold_selected_role = declare_parameter<std::string>(
+      "diagnostics.hold_selected_role", "");
+    const auto selected_roles = declare_parameter<std::vector<std::string>>(
+      "diagnostics.selected_roles", std::vector<std::string>{});
+    const auto selected_timestamps = declare_parameter<std::vector<double>>(
+      "diagnostics.selected_timestamps", std::vector<double>{});
+    const auto selected_prediction_poses = declare_parameter<std::vector<double>>(
+      "diagnostics.selected_prediction_poses_xyz_xyzw", std::vector<double>{});
+    const auto selected_registration_poses = declare_parameter<std::vector<double>>(
+      "diagnostics.selected_registration_poses_xyz_xyzw", std::vector<double>{});
+    const auto selected_inliers = declare_parameter<std::vector<int64_t>>(
+      "diagnostics.selected_inliers", std::vector<int64_t>{});
+    const auto selected_iterations = declare_parameter<std::vector<int64_t>>(
+      "diagnostics.selected_iterations", std::vector<int64_t>{});
+    const auto selected_final_errors = declare_parameter<std::vector<double>>(
+      "diagnostics.selected_final_errors", std::vector<double>{});
+    const auto selected_registration_runtimes = declare_parameter<std::vector<double>>(
+      "diagnostics.selected_registration_runtimes_ms", std::vector<double>{});
+    if (selected_roles.size() != selected_timestamps.size()) {
+      throw std::invalid_argument(
+              "diagnostics selected_roles and selected_timestamps must have equal length");
+    }
+    const bool audit_states_available = !selected_roles.empty() &&
+      selected_prediction_poses.size() == selected_roles.size() * 7U &&
+      selected_registration_poses.size() == selected_roles.size() * 7U &&
+      selected_inliers.size() == selected_roles.size() &&
+      selected_iterations.size() == selected_roles.size() &&
+      selected_final_errors.size() == selected_roles.size() &&
+      selected_registration_runtimes.size() == selected_roles.size();
+    const bool any_audit_state_values = !selected_prediction_poses.empty() ||
+      !selected_registration_poses.empty() || !selected_inliers.empty() ||
+      !selected_iterations.empty() || !selected_final_errors.empty() ||
+      !selected_registration_runtimes.empty();
+    if (any_audit_state_values && !audit_states_available) {
+      throw std::invalid_argument(
+              "diagnostics selected production audit state vectors have inconsistent sizes");
+    }
+    for (std::size_t index = 0; index < selected_roles.size(); ++index) {
+      SelectedScanSpec selected;
+      selected.role = selected_roles[index];
+      selected.timestamp = selected_timestamps[index];
+      selected.audit_state_available = audit_states_available;
+      if (audit_states_available) {
+        const std::size_t offset = index * 7U;
+        selected.audit_prediction = makeTransform(
+          selected_prediction_poses[offset], selected_prediction_poses[offset + 1U],
+          selected_prediction_poses[offset + 2U], selected_prediction_poses[offset + 3U],
+          selected_prediction_poses[offset + 4U], selected_prediction_poses[offset + 5U],
+          selected_prediction_poses[offset + 6U]);
+        selected.audit_registration = makeTransform(
+          selected_registration_poses[offset], selected_registration_poses[offset + 1U],
+          selected_registration_poses[offset + 2U], selected_registration_poses[offset + 3U],
+          selected_registration_poses[offset + 4U], selected_registration_poses[offset + 5U],
+          selected_registration_poses[offset + 6U]);
+        if (selected_inliers[index] < 0 || selected_iterations[index] < 0) {
+          throw std::invalid_argument("diagnostics selected counts must be nonnegative");
+        }
+        selected.audit_inliers = static_cast<std::size_t>(selected_inliers[index]);
+        selected.audit_iterations = static_cast<std::size_t>(selected_iterations[index]);
+        selected.audit_final_error = selected_final_errors[index];
+        selected.audit_registration_runtime_ms = selected_registration_runtimes[index];
+      }
+      diagnostic_settings.selected_scans.push_back(std::move(selected));
+    }
+    diagnostics_ = std::make_unique<GicpDiagnostics>(
+      this, diagnostic_settings, loaded_map.points, registrar_->targetCloud());
 
     const std::string cloud_topic = declare_parameter<std::string>(
       "cloud_topic", "/velodyne_points");
@@ -241,6 +339,12 @@ private:
 
   void cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message)
   {
+    const auto callback_start = std::chrono::steady_clock::now();
+    // Selected-scan RViz mode deliberately freezes the chosen scan. The bag may continue to
+    // publish, but no later sensor data is admitted to the localization pipeline.
+    if (diagnostics_ && diagnostics_->holdSelectedCaptured()) {
+      return;
+    }
     ++total_clouds_received_;
     const double timestamp = stampSeconds(message->header.stamp);
     if (!std::isfinite(timestamp)) {
@@ -271,7 +375,7 @@ private:
       ++skipped_before_reference_;
       return;
     }
-    pending_scans_.push_back(std::move(message));
+    pending_scans_.push_back(PendingScan{std::move(message), callback_start});
     drainPending(false);
   }
 
@@ -343,7 +447,7 @@ private:
   void drainPending(const bool final)
   {
     while (!pending_scans_.empty() && !finished_) {
-      const double timestamp = stampSeconds(pending_scans_.front()->header.stamp);
+      const double timestamp = stampSeconds(pending_scans_.front().message->header.stamp);
       if (!final && (predictions_.empty() || predictions_.back().timestamp < timestamp)) {
         return;
       }
@@ -353,15 +457,17 @@ private:
       {
         return;
       }
-      auto message = pending_scans_.front();
+      auto pending = pending_scans_.front();
       pending_scans_.pop_front();
-      processScan(*message, nearestPrediction(timestamp));
+      processScan(
+        *pending.message, nearestPrediction(timestamp), pending.callback_start);
     }
   }
 
   void processScan(
     const sensor_msgs::msg::PointCloud2& message,
-    const std::optional<PredictionAssociation>& association)
+    const std::optional<PredictionAssociation>& association,
+    const std::chrono::steady_clock::time_point core_start)
   {
     const double timestamp = stampSeconds(message.header.stamp);
     LocalizationRecord record;
@@ -388,7 +494,7 @@ private:
 
     if (!association) {
       record.reject_reason = RejectReason::NoPrediction;
-      finishRecord(record);
+      finishRecord(record, core_start, message, nullptr, nullptr);
       return;
     }
     record.prediction_time_difference = association->time_difference;
@@ -399,7 +505,7 @@ private:
     }
     if (association->time_difference > prediction_tolerance_) {
       record.reject_reason = RejectReason::TimestampMismatch;
-      finishRecord(record);
+      finishRecord(record, core_start, message, nullptr, nullptr);
       return;
     }
 
@@ -409,7 +515,7 @@ private:
           std::abs(timestamp - reference_->first().timestamp);
         if (!reference_association || first_reference_difference > reference_tolerance_) {
           record.reject_reason = RejectReason::TimestampMismatch;
-          finishRecord(record);
+          finishRecord(record, core_start, message, nullptr, nullptr);
           return;
         }
       }
@@ -430,31 +536,34 @@ private:
         get_logger(), "Unexpected cloud frame '%s' (expected '%s')",
         message.header.frame_id.c_str(), expected_lidar_frame_.c_str());
       record.reject_reason = RejectReason::RegistrationException;
-      finishRecord(record);
+      finishRecord(record, core_start, message, nullptr, nullptr);
       return;
     }
 
+    std::optional<ExtractedScan> scan;
+    std::optional<RegistrationOutput> registration;
     try {
-      const ExtractedScan scan = extractFiniteXYZ(message);
-      record.input_points = scan.input_point_count;
-      record.finite_points = scan.finite_point_count;
-      if (!scan.points || scan.points->size() < 10U) {
+      scan.emplace(extractFiniteXYZ(message));
+      record.input_points = scan->input_point_count;
+      record.finite_points = scan->finite_point_count;
+      if (!scan->points || scan->points->size() < 10U) {
         record.reject_reason = RejectReason::EmptyScan;
-        finishRecord(record);
+        finishRecord(
+          record, core_start, message, scan->points ? scan->points.get() : nullptr, nullptr);
         return;
       }
-      const RegistrationOutput registration = registrar_->align(*scan.points, record.prediction);
-      record.registration = registration.T_map_lidar;
-      record.converged = registration.converged;
-      record.iterations = registration.iterations;
-      record.num_inliers = registration.num_inliers;
-      record.final_error = registration.final_error;
-      record.runtime_ms = registration.runtime_ms;
-      record.downsampled_points = registration.source_downsampled_points;
-      record.hessian = registration.hessian;
-      if (isFiniteTransform(registration.T_map_lidar)) {
+      registration.emplace(registrar_->align(*scan->points, record.prediction));
+      record.registration = registration->T_map_lidar;
+      record.converged = registration->converged;
+      record.iterations = registration->iterations;
+      record.num_inliers = registration->num_inliers;
+      record.final_error = registration->final_error;
+      record.runtime_ms = registration->runtime_ms;
+      record.downsampled_points = registration->source_downsampled_points;
+      record.hessian = registration->hessian;
+      if (isFiniteTransform(registration->T_map_lidar)) {
         const Eigen::Isometry3d correction = predictionToRegistrationDelta(
-          record.prediction, registration.T_map_lidar);
+          record.prediction, registration->T_map_lidar);
         const auto correction_rpy = rollPitchYaw(correction.linear());
         record.correction_translation_m = correction.translation().norm();
         record.correction_roll_rad = correction_rpy[0];
@@ -462,22 +571,55 @@ private:
         record.correction_yaw_rad = correction_rpy[2];
       }
       record.reject_reason = evaluateRegistration(
-        registration, record.prediction, quality_settings_);
+        *registration, record.prediction, quality_settings_);
       record.accepted = record.reject_reason == RejectReason::None;
       if (record.accepted) {
         anchor_prediction_ = association->prediction.T_odom_base;
-        anchor_T_map_lidar_ = registration.T_map_lidar;
+        anchor_T_map_lidar_ = registration->T_map_lidar;
       }
     } catch (const std::exception& error) {
       RCLCPP_ERROR(get_logger(), "Registration exception at %.9f: %s", timestamp, error.what());
       record.reject_reason = RejectReason::RegistrationException;
     }
-    finishRecord(record);
+    finishRecord(
+      record, core_start, message,
+      scan && scan->points ? scan->points.get() : nullptr,
+      registration ? &*registration : nullptr);
   }
 
-  void finishRecord(const LocalizationRecord& record)
+  void finishRecord(
+    LocalizationRecord record,
+    const std::chrono::steady_clock::time_point core_start,
+    const sensor_msgs::msg::PointCloud2& raw_message,
+    const small_gicp::PointCloud* finite_source,
+    const RegistrationOutput* registration)
   {
+    // End the latency interval before disk I/O, correspondence reconstruction, and ROS/RViz
+    // publication. This is the all-scan online localization core Gate.
+    record.core_localization_latency_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - core_start).count();
+    const std::size_t processed_index = processed_scans_;
     writer_->write(record);
+    latency_writer_->write(record, processed_index);
+    continuous_scan_state_.record(record.accepted, record.registration);
+
+    std::optional<CorrespondenceReconstruction> correspondences;
+    std::optional<RegistrationOutput> correspondence_registration;
+    if (registration && diagnostics_ &&
+      diagnostics_->needsCorrespondences(processed_index, record.timestamp))
+    {
+      correspondence_registration.emplace(
+        diagnostics_->correspondenceRegistration(record.timestamp, *registration));
+      correspondences.emplace(
+        registrar_->reconstructFinalCorrespondences(*correspondence_registration));
+    }
+    if (diagnostics_) {
+      diagnostics_->handleProcessedScan(
+        raw_message, finite_source, record, registration,
+        correspondence_registration ? &*correspondence_registration : nullptr,
+        correspondences ? &*correspondences : nullptr, processed_index);
+    }
+
     ++processed_scans_;
     if (record.accepted) {
       ++accepted_scans_;
@@ -517,6 +659,14 @@ private:
            << filter_timing_associated_scans_ << ",\n"
            << "  \"raw_map_points\": " << raw_map_points_ << ",\n"
            << "  \"target_map_points\": " << target_map_points_ << ",\n"
+           << "  \"continuous_all_scan_processing\": true,\n"
+           << "  \"candidate_count_used_for_execution\": "
+           << continuous_scan_state_.candidateCountUsedForExecution() << ",\n"
+           << "  \"accepted_path_pose_count\": "
+           << continuous_scan_state_.acceptedPathSize() << ",\n"
+           << "  \"correspondence_method\": "
+           << "\"posthoc_final_transform_correspondence_reconstruction\",\n"
+           << "  \"exact_internal_correspondence_claimed\": false,\n"
            << "  \"time_window_enabled\": " << (time_window_.enabled() ? "true" : "false")
            << ",\n"
            << "  \"time_window_origin_timestamp\": " << time_window_.originTimestamp() << ",\n"
@@ -553,9 +703,12 @@ private:
 
   std::unique_ptr<MapRegistrar> registrar_;
   std::unique_ptr<ResultWriter> writer_;
+  std::unique_ptr<LatencyWriter> latency_writer_;
+  std::unique_ptr<GicpDiagnostics> diagnostics_;
+  ContinuousScanState continuous_scan_state_;
   std::deque<TimedPrediction> predictions_;
   std::deque<TimedFilterRuntime> filter_runtimes_;
-  std::deque<sensor_msgs::msg::PointCloud2::ConstSharedPtr> pending_scans_;
+  std::deque<PendingScan> pending_scans_;
   std::optional<Eigen::Isometry3d> anchor_prediction_;
   Eigen::Isometry3d anchor_T_map_lidar_{Eigen::Isometry3d::Identity()};
 

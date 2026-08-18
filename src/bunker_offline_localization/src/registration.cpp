@@ -3,6 +3,7 @@
 #include "bunker_offline_localization/transforms.hpp"
 
 #include <small_gicp/ann/kdtree_omp.hpp>
+#include <small_gicp/ann/traits.hpp>
 #include <small_gicp/factors/gicp_factor.hpp>
 #include <small_gicp/registration/reduction_omp.hpp>
 #include <small_gicp/registration/registration.hpp>
@@ -105,12 +106,73 @@ RegistrationOutput MapRegistrar::align(
   output.hessian = result.H;
   output.runtime_ms = std::chrono::duration<double, std::milli>(stop - start).count();
   output.source_downsampled_points = source->size();
+  output.preprocessed_source = source;
   return output;
 }
 
 std::size_t MapRegistrar::targetPointCount() const
 {
   return impl_->target->size();
+}
+
+const small_gicp::PointCloud& MapRegistrar::targetCloud() const
+{
+  return *impl_->target;
+}
+
+CorrespondenceReconstruction MapRegistrar::reconstructFinalCorrespondences(
+  const RegistrationOutput& registration) const
+{
+  if (!registration.preprocessed_source) {
+    throw std::invalid_argument("Registration output has no preprocessed source cloud");
+  }
+  if (!isFiniteTransform(registration.T_map_lidar)) {
+    throw std::invalid_argument("Cannot reconstruct correspondences for a nonfinite transform");
+  }
+
+  CorrespondenceReconstruction reconstruction;
+  reconstruction.candidate_count = registration.preprocessed_source->size();
+  reconstruction.valid.reserve(reconstruction.candidate_count);
+  const double maximum_distance_squared =
+    impl_->settings.max_correspondence_distance * impl_->settings.max_correspondence_distance;
+  for (std::size_t source_index = 0; source_index < reconstruction.candidate_count;
+    ++source_index)
+  {
+    const Eigen::Vector4d source = small_gicp::traits::point(
+      *registration.preprocessed_source, source_index);
+    const Eigen::Vector4d registered = registration.T_map_lidar * source;
+    std::size_t target_index{};
+    double squared_distance{};
+    if (!small_gicp::traits::nearest_neighbor_search(
+        *impl_->target_tree, registered, &target_index, &squared_distance) ||
+      squared_distance > maximum_distance_squared)
+    {
+      continue;
+    }
+
+    const Eigen::Vector4d target = small_gicp::traits::point(*impl_->target, target_index);
+    const Eigen::Vector4d residual = target - registered;
+    const Eigen::Matrix4d combined_covariance =
+      small_gicp::traits::cov(*impl_->target, target_index) +
+      registration.T_map_lidar.matrix() *
+      small_gicp::traits::cov(*registration.preprocessed_source, source_index) *
+      registration.T_map_lidar.matrix().transpose();
+    const Eigen::Matrix3d mahalanobis = combined_covariance.block<3, 3>(0, 0).inverse();
+
+    ReconstructedCorrespondence correspondence;
+    correspondence.source_index = source_index;
+    correspondence.target_index = target_index;
+    correspondence.source_lidar = source.head<3>();
+    correspondence.registered_source_map = registered.head<3>();
+    correspondence.target_map = target.head<3>();
+    correspondence.residual_map = residual.head<3>();
+    correspondence.distance_m = std::sqrt(squared_distance);
+    correspondence.mahalanobis_error_contribution =
+      0.5 * (correspondence.residual_map.transpose() * mahalanobis *
+      correspondence.residual_map)(0, 0);
+    reconstruction.valid.push_back(correspondence);
+  }
+  return reconstruction;
 }
 
 const RegistrationSettings& MapRegistrar::settings() const
