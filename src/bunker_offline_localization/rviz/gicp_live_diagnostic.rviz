@@ -8,31 +8,56 @@ Visualization Manager:
   Displays:
     - Class: rviz_default_plugins/PointCloud2
       Name: Map cloud
+      Alpha: 0.55
       Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
         Value: /map_cloud
       Size (Pixels): 2
+      Size (m): 0.02
+      Style: Flat Squares
       Color Transformer: FlatColor
-      Color: 110; 110; 110
+      Color: 135; 135; 135
       Enabled: true
     - Class: rviz_default_plugins/PointCloud2
       Name: Raw scan (velodyne frame)
+      Alpha: 0.8
       Topic:
+        Depth: 2
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /raw_scan
       Size (Pixels): 3
+      Size (m): 0.025
+      Style: Flat Squares
       Color Transformer: FlatColor
       Color: 40; 120; 255
-      Enabled: true
+      Enabled: false
     - Class: rviz_default_plugins/PointCloud2
       Name: Registered scan
+      Alpha: 1.0
       Topic:
+        Depth: 2
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /registered_scan
-      Size (Pixels): 3
+      Size (Pixels): 4
+      Size (m): 0.035
+      Style: Flat Squares
       Color Transformer: FlatColor
-      Color: 40; 255; 80
+      Color: 20; 255; 70
       Enabled: true
     - Class: rviz_default_plugins/Path
       Name: GICP accepted path
       Topic:
+        Depth: 2
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /gicp_path
       Color: 255; 255; 0
       Line Style: Lines
@@ -41,20 +66,32 @@ Visualization Manager:
     - Class: rviz_default_plugins/Pose
       Name: GICP pose
       Topic:
+        Depth: 2
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /gicp_pose
       Color: 0; 255; 0
       Enabled: true
     - Class: rviz_default_plugins/Pose
       Name: Prediction pose
       Topic:
+        Depth: 2
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /prediction_pose
       Color: 255; 0; 255
       Enabled: true
     - Class: rviz_default_plugins/MarkerArray
       Name: Correspondences (max 200)
       Topic:
+        Depth: 2
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
         Value: /gicp_correspondences
-      Enabled: true
+      Enabled: false
     - Class: rviz_default_plugins/TF
       Name: TF
       Enabled: true

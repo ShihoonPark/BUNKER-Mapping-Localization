@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,15 @@ public:
   std::size_t acceptedPathSize() const {return accepted_path_.poses.size();}
 
 private:
+  struct SelectedVisualizationSnapshot {
+    sensor_msgs::msg::PointCloud2 raw_scan;
+    sensor_msgs::msg::PointCloud2 registered_scan;
+    geometry_msgs::msg::PoseStamped prediction_pose;
+    geometry_msgs::msg::PoseStamped gicp_pose;
+    nav_msgs::msg::Path gicp_path;
+    visualization_msgs::msg::MarkerArray correspondences;
+  };
+
   const SelectedScanSpec* matchSelected(double timestamp) const;
   void publishMap();
   void publishPose(
@@ -77,6 +87,7 @@ private:
   void publishCorrespondences(
     const CorrespondenceReconstruction& correspondences,
     const builtin_interfaces::msg::Time& stamp);
+  void republishSelectedSnapshot();
   void writeSelectedAudit(
     const SelectedScanSpec& selected,
     const small_gicp::PointCloud& finite_source,
@@ -99,6 +110,8 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_publisher_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr correspondence_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_publisher_;
+  rclcpp::TimerBase::SharedPtr selected_snapshot_timer_;
+  std::optional<SelectedVisualizationSnapshot> selected_snapshot_;
   bool hold_selected_captured_{false};
 };
 

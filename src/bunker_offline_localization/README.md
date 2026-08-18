@@ -705,12 +705,20 @@ this keeps the audited `-0.297 m` anomaly fixed even if a new asynchronous repla
 local basin. Visualization line sampling is deterministic and capped at 200; all valid
 correspondences remain in the CSV and statistics.
 
-Published topics are `/map_cloud` (`map`, one transient-local publish), `/raw_scan` (`velodyne`),
-`/registered_scan` (`map`), `/gicp_pose` (`map`), `/gicp_path` (`map`), `/prediction_pose`
-(`map`), and `/gicp_correspondences` (`map`). The only diagnostic TF is
+Published topics are `/map_cloud` (`map`, one reliable/transient-local publish), `/raw_scan`
+(`velodyne`), `/registered_scan` (`map`), `/gicp_pose` (`map`), `/gicp_path` (`map`),
+`/prediction_pose` (`map`), and `/gicp_correspondences` (`map`). All six dynamic visualization
+topics explicitly use best-effort/volatile QoS, matching the checked-in RViz subscriptions. In
+selected mode the captured dynamic snapshot is republished at 2 Hz after localization freezes, so
+it remains available after bag playback and to late subscribers until Ctrl+C. Its raw-scan
+snapshot preserves the unregistered finite XYZ geometry in `velodyne` while omitting unused point
+fields to keep best-effort delivery responsive. Correspondence markers have unlimited lifetime.
+The only diagnostic TF is
 `map -> localized_velodyne`; no uncalibrated `map -> base_link` is fabricated. The checked-in RViz
-config provides map/raw/registered clouds, accepted path, current/predicted poses,
-correspondences, and TF. Top and side views can be selected with the standard RViz view controls.
+config enables the map, registered scan, accepted path, final pose, and prediction pose by default;
+raw scan and correspondences remain one-click optional displays. Point sizes and colors emphasize
+the moving registered scan over the fixed global map. Top and side views can be selected with the
+standard RViz view controls.
 
 The primary `core_localization_latency_ms` uses a steady clock from callback processing through
 prediction access, source preprocessing, registration, quality gate, and final-pose readiness.

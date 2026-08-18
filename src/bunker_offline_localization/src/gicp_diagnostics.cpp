@@ -11,6 +11,7 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -61,6 +62,62 @@ geometry_msgs::msg::Pose poseMessage(const Eigen::Isometry3d& transform)
   pose.orientation.z = quaternion.z();
   pose.orientation.w = quaternion.w();
   return pose;
+}
+
+geometry_msgs::msg::PoseStamped poseStampedMessage(
+  const Eigen::Isometry3d& transform,
+  const std::string& frame,
+  const builtin_interfaces::msg::Time& stamp)
+{
+  geometry_msgs::msg::PoseStamped message;
+  message.header.frame_id = frame;
+  message.header.stamp = stamp;
+  message.pose = poseMessage(transform);
+  return message;
+}
+
+visualization_msgs::msg::MarkerArray correspondenceMessage(
+  const CorrespondenceReconstruction& correspondences,
+  const std::string& frame,
+  const builtin_interfaces::msg::Time& stamp,
+  const std::size_t max_lines)
+{
+  visualization_msgs::msg::MarkerArray array;
+  visualization_msgs::msg::Marker clear;
+  clear.action = visualization_msgs::msg::Marker::DELETEALL;
+  array.markers.push_back(clear);
+  visualization_msgs::msg::Marker lines;
+  lines.header.frame_id = frame;
+  lines.header.stamp = stamp;
+  lines.ns = "posthoc_final_transform_correspondences";
+  lines.id = 0;
+  lines.type = visualization_msgs::msg::Marker::LINE_LIST;
+  lines.action = visualization_msgs::msg::Marker::ADD;
+  // A selected snapshot must remain visible until it is replaced or the process exits.
+  lines.lifetime.sec = 0;
+  lines.lifetime.nanosec = 0U;
+  lines.scale.x = 0.012;
+  lines.color.r = 1.0F;
+  lines.color.g = 0.25F;
+  lines.color.b = 0.05F;
+  lines.color.a = 0.75F;
+  const auto indices = deterministicSubsampleIndices(correspondences.valid.size(), max_lines);
+  lines.points.reserve(indices.size() * 2U);
+  for (const std::size_t index : indices) {
+    const auto& correspondence = correspondences.valid[index];
+    geometry_msgs::msg::Point source;
+    source.x = correspondence.registered_source_map.x();
+    source.y = correspondence.registered_source_map.y();
+    source.z = correspondence.registered_source_map.z();
+    geometry_msgs::msg::Point target;
+    target.x = correspondence.target_map.x();
+    target.y = correspondence.target_map.y();
+    target.z = correspondence.target_map.z();
+    lines.points.push_back(source);
+    lines.points.push_back(target);
+  }
+  array.markers.push_back(std::move(lines));
+  return array;
 }
 
 void writePly(
@@ -136,6 +193,10 @@ GicpDiagnostics::GicpDiagnostics(
   status_publisher_ = node_->create_publisher<std_msgs::msg::String>(
     "/gicp_status", live_qos);
   transform_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*node_);
+  if (!settings_.hold_selected_role.empty()) {
+    selected_snapshot_timer_ = node_->create_wall_timer(
+      std::chrono::milliseconds(500), [this]() {republishSelectedSnapshot();});
+  }
   publishMap();
 }
 
@@ -199,11 +260,7 @@ void GicpDiagnostics::publishPose(
   if (!publisher || !isFiniteTransform(transform)) {
     return;
   }
-  geometry_msgs::msg::PoseStamped message;
-  message.header.frame_id = settings_.map_frame;
-  message.header.stamp = stamp;
-  message.pose = poseMessage(transform);
-  publisher->publish(message);
+  publisher->publish(poseStampedMessage(transform, settings_.map_frame, stamp));
 }
 
 void GicpDiagnostics::publishCorrespondences(
@@ -213,40 +270,21 @@ void GicpDiagnostics::publishCorrespondences(
   if (!correspondence_publisher_) {
     return;
   }
-  visualization_msgs::msg::MarkerArray array;
-  visualization_msgs::msg::Marker clear;
-  clear.action = visualization_msgs::msg::Marker::DELETEALL;
-  array.markers.push_back(clear);
-  visualization_msgs::msg::Marker lines;
-  lines.header.frame_id = settings_.map_frame;
-  lines.header.stamp = stamp;
-  lines.ns = "posthoc_final_transform_correspondences";
-  lines.id = 0;
-  lines.type = visualization_msgs::msg::Marker::LINE_LIST;
-  lines.action = visualization_msgs::msg::Marker::ADD;
-  lines.scale.x = 0.012;
-  lines.color.r = 1.0F;
-  lines.color.g = 0.25F;
-  lines.color.b = 0.05F;
-  lines.color.a = 0.75F;
-  const auto indices = deterministicSubsampleIndices(
-    correspondences.valid.size(), settings_.rviz_max_correspondence_lines);
-  lines.points.reserve(indices.size() * 2U);
-  for (const std::size_t index : indices) {
-    const auto& correspondence = correspondences.valid[index];
-    geometry_msgs::msg::Point source;
-    source.x = correspondence.registered_source_map.x();
-    source.y = correspondence.registered_source_map.y();
-    source.z = correspondence.registered_source_map.z();
-    geometry_msgs::msg::Point target;
-    target.x = correspondence.target_map.x();
-    target.y = correspondence.target_map.y();
-    target.z = correspondence.target_map.z();
-    lines.points.push_back(source);
-    lines.points.push_back(target);
+  correspondence_publisher_->publish(correspondenceMessage(
+    correspondences, settings_.map_frame, stamp, settings_.rviz_max_correspondence_lines));
+}
+
+void GicpDiagnostics::republishSelectedSnapshot()
+{
+  if (!selected_snapshot_) {
+    return;
   }
-  array.markers.push_back(lines);
-  correspondence_publisher_->publish(array);
+  raw_scan_publisher_->publish(selected_snapshot_->raw_scan);
+  registered_scan_publisher_->publish(selected_snapshot_->registered_scan);
+  prediction_publisher_->publish(selected_snapshot_->prediction_pose);
+  pose_publisher_->publish(selected_snapshot_->gicp_pose);
+  path_publisher_->publish(selected_snapshot_->gicp_path);
+  correspondence_publisher_->publish(selected_snapshot_->correspondences);
 }
 
 void GicpDiagnostics::writeSelectedAudit(
@@ -338,19 +376,16 @@ void GicpDiagnostics::handleProcessedScan(
     writeSelectedAudit(
       *selected, *finite_source, audit_record, *correspondence_registration,
       *correspondences, processed_index);
-    if (!settings_.hold_selected_role.empty() &&
-      selected->role == settings_.hold_selected_role)
-    {
-      hold_selected_captured_ = true;
-    }
   }
+  const bool selected_hold = selected && finite_source && correspondence_registration &&
+    correspondences && !settings_.hold_selected_role.empty() &&
+    selected->role == settings_.hold_selected_role;
   if (!settings_.publish_visualization) {
+    hold_selected_captured_ = hold_selected_captured_ || selected_hold;
     return;
   }
 
   raw_scan_publisher_->publish(raw_message);
-  const bool selected_hold = selected && !settings_.hold_selected_role.empty() &&
-    selected->role == settings_.hold_selected_role;
   const LocalizationRecord& visualization_record = selected_hold ? audit_record : record;
   const RegistrationOutput* visualization_registration = selected_hold ?
     correspondence_registration : registration;
@@ -379,11 +414,11 @@ void GicpDiagnostics::handleProcessedScan(
     transform.transform.rotation.w = quaternion.w();
     transform_broadcaster_->sendTransform(transform);
   }
-  if (record.accepted) {
+  if (visualization_record.accepted) {
     geometry_msgs::msg::PoseStamped path_pose;
     path_pose.header.frame_id = settings_.map_frame;
     path_pose.header.stamp = raw_message.header.stamp;
-    path_pose.pose = poseMessage(record.registration);
+    path_pose.pose = poseMessage(visualization_record.registration);
     accepted_path_.poses.push_back(path_pose);
     accepted_path_.header.stamp = raw_message.header.stamp;
   }
@@ -392,9 +427,35 @@ void GicpDiagnostics::handleProcessedScan(
     publishCorrespondences(*correspondences, raw_message.header.stamp);
   }
   std_msgs::msg::String status;
-  status.data = record.accepted ? std::string("ACCEPTED") :
-    std::string("REJECTED_") + toString(record.reject_reason);
+  status.data = visualization_record.accepted ? std::string("ACCEPTED") :
+    std::string("REJECTED_") + toString(visualization_record.reject_reason);
   status_publisher_->publish(status);
+
+  if (selected_hold && visualization_registration &&
+    visualization_registration->preprocessed_source && correspondences &&
+    isFiniteTransform(visualization_record.prediction) &&
+    isFiniteTransform(visualization_record.registration))
+  {
+    SelectedVisualizationSnapshot snapshot;
+    // Keep the unregistered LiDAR-frame XYZ geometry while avoiding repeatedly serializing
+    // unused raw packet fields in the persistent best-effort selected snapshot.
+    snapshot.raw_scan = cloudMessage(
+      *finite_source, raw_message.header.frame_id, raw_message.header.stamp);
+    snapshot.registered_scan = cloudMessage(
+      *visualization_registration->preprocessed_source, settings_.map_frame,
+      raw_message.header.stamp, visualization_record.registration);
+    snapshot.prediction_pose = poseStampedMessage(
+      visualization_record.prediction, settings_.map_frame, raw_message.header.stamp);
+    snapshot.gicp_pose = poseStampedMessage(
+      visualization_record.registration, settings_.map_frame, raw_message.header.stamp);
+    snapshot.gicp_path = accepted_path_;
+
+    snapshot.correspondences = correspondenceMessage(
+      *correspondences, settings_.map_frame, raw_message.header.stamp,
+      settings_.rviz_max_correspondence_lines);
+    selected_snapshot_ = std::move(snapshot);
+    hold_selected_captured_ = true;
+  }
 }
 
 }  // namespace bunker_offline_localization
