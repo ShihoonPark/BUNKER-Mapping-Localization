@@ -5,6 +5,12 @@ covariance_adapter:
     imu_input: /imu/data
     odom_output: /localization/odom_with_covariance
     imu_output: /localization/imu_with_covariance
+    # Disabled by default so the validated 150626 good-bag run remains unchanged.
+    time_window:
+      enabled: false
+      origin_timestamp: 0.0
+      start_offset_sec: 0.0
+      end_offset_sec: 0.0
     # These are initial tuning assumptions, not measured sensor covariances.
     # Diagonal order for odometry: x y z roll pitch yaw.
     odom_pose_covariance_diagonal: [0.0225, 0.0225, 1000.0, 1000.0, 1000.0, 0.01]
@@ -37,6 +43,17 @@ offline_localizer:
     reference_timestamp_tolerance: 0.06
     prediction_timestamp_tolerance: 0.10
     max_scans: 0
+
+    initialization:
+      mode: reference
+
+    # Inclusive offsets from the rosbag metadata start timestamp. Disabled for the original
+    # same-bag smoke test and enabled only by the independent-run override.
+    time_window:
+      enabled: false
+      origin_timestamp: 0.0
+      start_offset_sec: 0.0
+      end_offset_sec: 0.0
 
     base_to_lidar:
       available: false

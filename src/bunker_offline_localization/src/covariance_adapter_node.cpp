@@ -1,3 +1,5 @@
+#include "bunker_offline_localization/time_window.hpp"
+
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -9,6 +11,11 @@
 
 namespace bunker_offline_localization {
 namespace {
+
+double stampSeconds(const builtin_interfaces::msg::Time& stamp)
+{
+  return static_cast<double>(stamp.sec) + 1.0e-9 * static_cast<double>(stamp.nanosec);
+}
 
 template<std::size_t N>
 std::array<double, N * N> diagonalCovariance(const std::vector<double>& diagonal)
@@ -37,6 +44,11 @@ public:
       "odom_output", "/localization/odom_with_covariance");
     const auto imu_output = declare_parameter<std::string>(
       "imu_output", "/localization/imu_with_covariance");
+    time_window_ = TimeWindow(
+      declare_parameter<bool>("time_window.enabled", false),
+      declare_parameter<double>("time_window.origin_timestamp", 0.0),
+      declare_parameter<double>("time_window.start_offset_sec", 0.0),
+      declare_parameter<double>("time_window.end_offset_sec", 0.0));
 
     odom_pose_covariance_ = diagonalCovariance<6>(
       declare_parameter<std::vector<double>>(
@@ -53,6 +65,11 @@ public:
     odom_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
       odom_input, rclcpp::QoS(500).reliable(),
       [this](nav_msgs::msg::Odometry::ConstSharedPtr input) {
+        if (time_window_.classify(stampSeconds(input->header.stamp)) !=
+          TimeWindowPosition::Inside)
+        {
+          return;
+        }
         auto output = *input;
         output.pose.covariance = odom_pose_covariance_;
         output.twist.covariance = odom_twist_covariance_;
@@ -61,6 +78,11 @@ public:
     imu_subscription_ = create_subscription<sensor_msgs::msg::Imu>(
       imu_input, rclcpp::QoS(1000).reliable(),
       [this](sensor_msgs::msg::Imu::ConstSharedPtr input) {
+        if (time_window_.classify(stampSeconds(input->header.stamp)) !=
+          TimeWindowPosition::Inside)
+        {
+          return;
+        }
         auto output = *input;
         // Bag orientation is fixed identity for all 12,555 messages. Mark it unavailable and
         // never present it to robot_localization as an orientation measurement.
@@ -83,6 +105,7 @@ private:
   std::array<double, 36> odom_pose_covariance_{};
   std::array<double, 36> odom_twist_covariance_{};
   std::array<double, 9> imu_angular_velocity_covariance_{};
+  TimeWindow time_window_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;

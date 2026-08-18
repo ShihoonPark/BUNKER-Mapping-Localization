@@ -45,6 +45,7 @@ target_link_libraries(${PROJECT_NAME}_core
 ament_target_dependencies(${PROJECT_NAME}_core sensor_msgs)
 
 add_executable(covariance_adapter_node src/covariance_adapter_node.cpp)
+target_include_directories(covariance_adapter_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(covariance_adapter_node PRIVATE -Wall -Wextra -Wpedantic)
 ament_target_dependencies(covariance_adapter_node nav_msgs rclcpp sensor_msgs)
 
@@ -64,7 +65,9 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
+  scripts/generate_independent_report.py
   scripts/generate_report.py
+  scripts/run_independent_163346.sh
   scripts/run_offline_smoke_test.sh
   DESTINATION lib/${PROJECT_NAME})
 
@@ -85,6 +88,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(registration_smoke_test test/registration_smoke_test.cpp)
   target_link_libraries(registration_smoke_test ${PROJECT_NAME}_core)
+
+  ament_add_gtest(time_window_test test/time_window_test.cpp)
+  target_link_libraries(time_window_test ${PROJECT_NAME}_core)
 endif()
 
 ament_export_include_directories(include)

@@ -1,0 +1,24 @@
+covariance_adapter:
+  ros__parameters:
+    time_window:
+      enabled: true
+      # rosbag metadata starting_time.nanoseconds = 1786692827221024517
+      origin_timestamp: 1786692827.2210245
+      start_offset_sec: 0.0
+      end_offset_sec: 50.0
+
+offline_localizer:
+  ros__parameters:
+    results_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/independent_163346_0_50s
+    # There is no GLIM trajectory for this independent drive. This seed is the first valid
+    # T_map_lidar from the map-generating 150626 run, used only as an initial guess under the
+    # explicit Phase 1 assumption that both recordings begin at the mapped staging pose.
+    initialization:
+      mode: parameter
+      translation: [0.000771, -0.000001, 0.070108]
+      rotation_xyzw: [-0.006881, 0.003860, 0.000182, 0.999969]
+    time_window:
+      enabled: true
+      origin_timestamp: 1786692827.2210245
+      start_offset_sec: 0.0
+      end_offset_sec: 50.0

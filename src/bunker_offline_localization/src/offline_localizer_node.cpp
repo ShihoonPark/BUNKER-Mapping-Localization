@@ -3,6 +3,7 @@
 #include "bunker_offline_localization/reference_trajectory.hpp"
 #include "bunker_offline_localization/registration.hpp"
 #include "bunker_offline_localization/scan_preprocessor.hpp"
+#include "bunker_offline_localization/time_window.hpp"
 #include "bunker_offline_localization/transforms.hpp"
 
 #include <nav_msgs/msg/odometry.hpp>
@@ -17,6 +18,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -72,8 +74,7 @@ public:
         "dump_150626_direct_20260814_222719/traj_lidar.txt")),
     results_directory_(declare_parameter<std::string>(
         "results_directory",
-        "/home/a/Desktop/shihoon/bunker_localization_ws/results")),
-    reference_(ReferenceTrajectory::load(reference_path_))
+        "/home/a/Desktop/shihoon/bunker_localization_ws/results"))
   {
     reference_tolerance_ = declare_parameter<double>("reference_timestamp_tolerance", 0.06);
     prediction_tolerance_ = declare_parameter<double>("prediction_timestamp_tolerance", 0.10);
@@ -81,6 +82,32 @@ public:
     if (reference_tolerance_ <= 0.0 || prediction_tolerance_ <= 0.0 || max_scans_ < 0) {
       throw std::invalid_argument("Timestamp tolerances must be positive and max_scans nonnegative");
     }
+
+    initialization_mode_ = declare_parameter<std::string>("initialization.mode", "reference");
+    if (initialization_mode_ == "reference") {
+      reference_.emplace(ReferenceTrajectory::load(reference_path_));
+      initial_T_map_lidar_ = reference_->first().T_map_lidar;
+    } else if (initialization_mode_ == "parameter") {
+      const auto translation = declare_parameter<std::vector<double>>(
+        "initialization.translation", std::vector<double>{});
+      const auto rotation = declare_parameter<std::vector<double>>(
+        "initialization.rotation_xyzw", std::vector<double>{});
+      if (translation.size() != 3U || rotation.size() != 4U) {
+        throw std::invalid_argument(
+                "Parameter initialization requires translation[3] and rotation_xyzw[4]");
+      }
+      initial_T_map_lidar_ = makeTransform(
+        translation[0], translation[1], translation[2],
+        rotation[0], rotation[1], rotation[2], rotation[3]);
+    } else {
+      throw std::invalid_argument("initialization.mode must be 'reference' or 'parameter'");
+    }
+
+    time_window_ = TimeWindow(
+      declare_parameter<bool>("time_window.enabled", false),
+      declare_parameter<double>("time_window.origin_timestamp", 0.0),
+      declare_parameter<double>("time_window.start_offset_sec", 0.0),
+      declare_parameter<double>("time_window.end_offset_sec", 0.0));
 
     RegistrationSettings registration_settings;
     registration_settings.num_threads = declare_parameter<int>("num_threads", 4);
@@ -130,10 +157,24 @@ public:
       prediction_topic, rclcpp::QoS(500),
       std::bind(&OfflineLocalizerNode::predictionCallback, this, std::placeholders::_1));
 
-    RCLCPP_INFO(
-      get_logger(),
-      "Prepared global target map once: raw=%zu downsampled=%zu; first reference=%.9f",
-      raw_map_points_, target_map_points_, reference_.first().timestamp);
+    if (reference_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Prepared global target map once: raw=%zu downsampled=%zu; first reference=%.9f",
+        raw_map_points_, target_map_points_, reference_->first().timestamp);
+    } else {
+      const auto& translation = initial_T_map_lidar_.translation();
+      RCLCPP_INFO(
+        get_logger(),
+        "Prepared global target map once: raw=%zu downsampled=%zu; parameter seed="
+        "[%.3f, %.3f, %.3f]",
+        raw_map_points_, target_map_points_, translation.x(), translation.y(), translation.z());
+    }
+    if (time_window_.enabled()) {
+      RCLCPP_INFO(
+        get_logger(), "Using inclusive bag-relative window %.3f..%.3f s from %.9f",
+        time_window_.startOffset(), time_window_.endOffset(), time_window_.originTimestamp());
+    }
   }
 
   ~OfflineLocalizerNode() override
@@ -188,10 +229,28 @@ private:
     if (!std::isfinite(timestamp)) {
       return;
     }
+    const TimeWindowPosition window_position = time_window_.classify(timestamp);
+    if (window_position == TimeWindowPosition::Before) {
+      ++skipped_before_window_;
+      return;
+    }
+    if (window_position == TimeWindowPosition::After) {
+      ++skipped_after_window_;
+      // The first cloud beyond the inclusive end is a deterministic stop signal. Drain any
+      // earlier scan that was waiting for a prediction, but never process this cloud.
+      drainPending(true);
+      finished_ = true;
+      writeRunSummary();
+      RCLCPP_INFO(
+        get_logger(), "Reached bag-relative time-window end %.3f s; shutting down",
+        time_window_.endOffset());
+      rclcpp::shutdown();
+      return;
+    }
     // GLIM and PointCloud2 stamps differ by sub-millisecond serialization/frame timing. Treat
     // the scan associated with the first reference pose as the first usable scan; only scans
     // earlier than the configured association window are unconditionally skipped.
-    if (timestamp < reference_.first().timestamp - reference_tolerance_) {
+    if (reference_ && timestamp < reference_->first().timestamp - reference_tolerance_) {
       ++skipped_before_reference_;
       return;
     }
@@ -204,6 +263,9 @@ private:
     try {
       const double timestamp = stampSeconds(message->header.stamp);
       if (!std::isfinite(timestamp)) {
+        return;
+      }
+      if (time_window_.classify(timestamp) != TimeWindowPosition::Inside) {
         return;
       }
       predictions_.push_back(TimedPrediction{timestamp, odometryPose(*message)});
@@ -255,8 +317,10 @@ private:
     record.prediction_time_difference = std::numeric_limits<double>::quiet_NaN();
     record.prediction_approximation = prediction_approximation_;
 
-    const auto reference_association = reference_.associateNearest(
-      timestamp, reference_tolerance_);
+    std::optional<PoseAssociation> reference_association;
+    if (reference_) {
+      reference_association = reference_->associateNearest(timestamp, reference_tolerance_);
+    }
     if (reference_association) {
       record.reference_time_difference = reference_association->absolute_time_difference;
     }
@@ -274,15 +338,17 @@ private:
     }
 
     if (!anchor_prediction_) {
-      const double first_reference_difference =
-        std::abs(timestamp - reference_.first().timestamp);
-      if (!reference_association || first_reference_difference > reference_tolerance_) {
-        record.reject_reason = RejectReason::TimestampMismatch;
-        finishRecord(record);
-        return;
+      if (reference_) {
+        const double first_reference_difference =
+          std::abs(timestamp - reference_->first().timestamp);
+        if (!reference_association || first_reference_difference > reference_tolerance_) {
+          record.reject_reason = RejectReason::TimestampMismatch;
+          finishRecord(record);
+          return;
+        }
       }
       anchor_prediction_ = association->prediction.T_odom_base;
-      anchor_T_map_lidar_ = reference_.first().T_map_lidar;
+      anchor_T_map_lidar_ = initial_T_map_lidar_;
     }
 
     // p_base = T_base_lidar*p_lidar. Propagate relative base motion from the last accepted
@@ -358,14 +424,23 @@ private:
     }
     std::filesystem::create_directories(results_directory_);
     std::ofstream output(results_directory_ + "/run_summary.json", std::ios::trunc);
+    output << std::setprecision(17);
     output << "{\n"
+           << "  \"initialization_mode\": \"" << initialization_mode_ << "\",\n"
            << "  \"total_clouds_received\": " << total_clouds_received_ << ",\n"
+           << "  \"skipped_before_window\": " << skipped_before_window_ << ",\n"
+           << "  \"skipped_after_window\": " << skipped_after_window_ << ",\n"
            << "  \"skipped_before_reference\": " << skipped_before_reference_ << ",\n"
            << "  \"processed_scans\": " << processed_scans_ << ",\n"
            << "  \"accepted_scans\": " << accepted_scans_ << ",\n"
            << "  \"rejected_scans\": " << rejected_scans_ << ",\n"
            << "  \"raw_map_points\": " << raw_map_points_ << ",\n"
            << "  \"target_map_points\": " << target_map_points_ << ",\n"
+           << "  \"time_window_enabled\": " << (time_window_.enabled() ? "true" : "false")
+           << ",\n"
+           << "  \"time_window_origin_timestamp\": " << time_window_.originTimestamp() << ",\n"
+           << "  \"time_window_start_offset_sec\": " << time_window_.startOffset() << ",\n"
+           << "  \"time_window_end_offset_sec\": " << time_window_.endOffset() << ",\n"
            << "  \"prediction_uses_identity_base_to_lidar_approximation\": "
            << (prediction_approximation_ ? "true" : "false") << "\n"
            << "}\n";
@@ -375,7 +450,10 @@ private:
   std::string map_path_;
   std::string reference_path_;
   std::string results_directory_;
-  ReferenceTrajectory reference_;
+  std::optional<ReferenceTrajectory> reference_;
+  std::string initialization_mode_;
+  Eigen::Isometry3d initial_T_map_lidar_{Eigen::Isometry3d::Identity()};
+  TimeWindow time_window_;
   double reference_tolerance_{};
   double prediction_tolerance_{};
   int max_scans_{};
@@ -392,6 +470,8 @@ private:
   Eigen::Isometry3d anchor_T_map_lidar_{Eigen::Isometry3d::Identity()};
 
   std::size_t total_clouds_received_{0};
+  std::size_t skipped_before_window_{0};
+  std::size_t skipped_after_window_{0};
   std::size_t skipped_before_reference_{0};
   std::size_t processed_scans_{0};
   std::size_t accepted_scans_{0};

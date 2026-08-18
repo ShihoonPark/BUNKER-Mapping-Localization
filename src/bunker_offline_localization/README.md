@@ -41,6 +41,19 @@ The first reference timestamp is `1786687590.879746914`. Scans earlier than its 
 window are skipped. The first associated scan initializes `T_map_lidar` from the first valid GLIM
 pose. Nearest timestamp association is accepted only within the configured tolerance.
 
+The independent Gate uses:
+
+- Bag: `/home/a/Desktop/shihoon/Slam/slam_flat_rc_20260814_163346`
+- Bag metadata origin: `1786692827.221024517`
+- Full bag: 129.757 s, 1,075 LiDAR scans, 4,732 odometry messages, 12,692 IMU messages
+- Gate interval: inclusive bag-relative `[0.0, 50.0]` s
+- Gate messages by header stamp: 490 LiDAR scans, 2,417 odometry, 6,919 IMU
+- Frames and covariance behavior match the good bag: `velodyne`, `odom -> base_link`, and
+  `imu_link`; source odom/IMU covariance arrays are zero and every IMU orientation is identity
+
+Large LiDAR/IMU timing gaps appear later in this bag (first observed after about 62.4 s). They are
+outside the Gate and are neither fused nor registered.
+
 ## Dependencies and vendoring
 
 - ROS 2 Humble and `robot_localization/ekf_node` from `/opt/ros/humble`
@@ -79,6 +92,21 @@ the ramp and stage height changes.
 
 The target map is loaded, voxelized, assigned covariances, and indexed with a KD-tree exactly once.
 Every source scan is independently filtered, voxelized, assigned covariances, and registered.
+
+## Independent-drive initialization and time window
+
+`time_window.enabled`, `time_window.origin_timestamp`, `time_window.start_offset_sec`, and
+`time_window.end_offset_sec` are shared by the covariance adapter and localizer. Bounds are
+inclusive and offsets are measured from the rosbag metadata origin, not from an individual
+topic's first message. They are disabled by default in `localization.yaml`, preserving the
+original 150626 behavior. `independent_163346.yaml` enables `[0, 50]` s, and the launch file also
+exposes `window_start_sec` and `window_end_sec` arguments.
+
+There is no GLIM reference trajectory for 163346. The independent configuration therefore uses
+`initialization.mode: parameter` and the first valid 150626 `T_map_lidar` only as a small_gicp
+initial guess, under the explicit Phase 1 assumption that both recordings begin at the mapped
+staging pose. It is not evaluation ground truth, absolute RMSE is not computed, and this is not a
+finished global relocalization method.
 
 ## Base-to-LiDAR limitation
 
@@ -147,9 +175,9 @@ colcon test --packages-select bunker_offline_localization --event-handlers conso
 colcon test-result --verbose
 ```
 
-The tests cover transform direction/signs/inversion, quaternion normalization, TUM parsing,
-timestamp tolerance, invalid registration rejection, and a known-transform synthetic point cloud
-registered with official small_gicp.
+The 23 tests cover transform direction/signs/inversion, quaternion normalization, TUM parsing,
+timestamp tolerance, invalid registration rejection, inclusive/disabled/invalid time windows,
+and a known-transform synthetic point cloud registered with official small_gicp.
 
 ## Run
 
@@ -173,6 +201,31 @@ ros2 run bunker_offline_localization generate_report.py --localization-csv /home
 
 The wrapper sets writable ROS and matplotlib cache paths. It replays only `/odom`, `/imu/data`,
 and `/velodyne_points`, publishes `/clock`, and shuts the launch down after playback is flushed.
+
+Independent first-scan integration check (writes only to `/tmp`):
+
+```bash
+ros2 launch bunker_offline_localization independent_localization.launch.py max_scans:=1 results_directory:=/tmp/bunker_independent_first_scan
+```
+
+Full independent 0-50 s Gate and report:
+
+```bash
+ros2 run bunker_offline_localization run_independent_163346.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/independent_163346_0_50s 0
+```
+
+The launch defaults are fixed to the independent bag, origin, and `[0, 50]` interval. To run a
+different reviewed interval, pass all three metadata-relative arguments explicitly:
+
+```bash
+ros2 launch bunker_offline_localization independent_localization.launch.py window_origin_timestamp:=1786692827.2210245 window_start_sec:=0.0 window_end_sec:=50.0 results_directory:=/home/a/Desktop/shihoon/bunker_localization_ws/results/independent_163346_0_50s
+```
+
+Regenerate the independent report without replaying the bag:
+
+```bash
+ros2 run bunker_offline_localization generate_independent_report.py --localization-csv /home/a/Desktop/shihoon/bunker_localization_ws/results/independent_163346_0_50s/localization.csv --estimated-trajectory /home/a/Desktop/shihoon/bunker_localization_ws/results/independent_163346_0_50s/estimated_traj_lidar.tum --map-ply /home/a/Desktop/shihoon/glim_real/20260814_classroom/results/classroom_150626.ply --output-directory /home/a/Desktop/shihoon/bunker_localization_ws/results/independent_163346_0_50s --window-origin-timestamp 1786692827.2210245 --window-start-sec 0.0 --window-end-sec 50.0 --expected-scans 490
+```
 
 ## Results
 
@@ -202,3 +255,33 @@ Validated full-run result on this machine:
 
 These values are explicitly a **pipeline/reference consistency smoke test**, not independent
 localization accuracy, because the map and reference trajectory came from the same bag.
+
+## Independent 163346 Gate results
+
+Generated separately under `results/independent_163346_0_50s/`:
+
+- `localization.csv` and `estimated_traj_lidar.tum`: independent scan records/accepted trajectory
+- `accepted_locations.csv` and `rejected_locations.csv`: event time, bag-relative time, position,
+  yaw, status, inliers, error, and runtime
+- `pose_jumps.csv`, `summary.json`, and `independent_report.md`: jump/smoothness and aggregate data
+- `map_trajectory_overlay.png`, `acceptance_timeline.png`, `pose_jumps.png`,
+  `trajectory_smoothness.png`, `num_inliers.png`, `gicp_final_error.png`, and `runtime_ms.png`
+
+Validated 0-50 s result on this machine:
+
+- Exactly 490 scans processed; first/last offsets 1.000909 / 49.992760 s
+- 487 accepted, 3 rejected (`NOT_CONVERGED`), 99.388% convergence/acceptance
+- Rejections at 5.909805, 16.830560, and 28.752881 s; their positions are retained separately
+- Inliers mean/p95/min: 2667.6 / 2937.8 / 2017
+- Raw final error mean/p95/max: 335.919 / 474.043 / 943.746; per-inlier p95 0.17995
+- Runtime mean/p95/max: 2.226 / 3.044 / 8.026 ms
+- Consecutive accepted translation step p95/max: 0.1021 / 0.2125 m
+- Consecutive accepted rotation step p95/max: 2.509 / 8.636 deg
+- The map overlay keeps the trajectory inside the mapped classroom path: it travels along the
+  lower edge from the origin, turns at the right side, and continues upward; rejected locations
+  remain on that same path rather than appearing as spatial outliers
+
+The largest motion spikes occur near the main turn around 27-29 s. They remain below the current
+registration correction gates, but the speed/acceleration plots are plausibility diagnostics, not
+vehicle-dynamics ground truth. Since 163346 has no independent reference trajectory, these results
+support map alignment continuity and robustness but make no absolute accuracy or RMSE claim.
