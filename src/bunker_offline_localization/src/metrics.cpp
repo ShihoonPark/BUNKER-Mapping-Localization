@@ -80,7 +80,8 @@ void writePose(std::ostream& stream, const Eigen::Isometry3d& pose)
     }
     return;
   }
-  const Eigen::Quaterniond quaternion(pose.linear());
+  Eigen::Quaterniond quaternion(pose.linear());
+  quaternion.normalize();
   const auto rpy = rollPitchYaw(pose.linear());
   stream << ',' << pose.translation().x()
          << ',' << pose.translation().y()
@@ -112,6 +113,8 @@ ResultWriter::ResultWriter(const std::string& results_directory)
        << ",gicp_x,gicp_y,gicp_z,gicp_qx,gicp_qy,gicp_qz,gicp_qw,gicp_roll,gicp_pitch,gicp_yaw"
        << ",prediction_available,prediction_approximation,converged,accepted,reject_reason"
        << ",iterations,num_inliers,final_error,runtime_ms,filter_runtime_ms"
+       << ",correction_translation_m,correction_roll_rad,correction_pitch_rad"
+       << ",correction_yaw_rad"
        << ",input_points,finite_points,downsampled_points"
        << ",prediction_time_difference,reference_time_difference"
        << ",filter_runtime_time_difference";
@@ -138,6 +141,10 @@ void ResultWriter::write(const LocalizationRecord& record)
        << ',' << record.final_error
        << ',' << record.runtime_ms
        << ',' << record.filter_runtime_ms
+       << ',' << record.correction_translation_m
+       << ',' << record.correction_roll_rad
+       << ',' << record.correction_pitch_rad
+       << ',' << record.correction_yaw_rad
        << ',' << record.input_points
        << ',' << record.finite_points
        << ',' << record.downsampled_points
@@ -153,7 +160,8 @@ void ResultWriter::write(const LocalizationRecord& record)
   csv_.flush();
 
   if (record.accepted) {
-    const Eigen::Quaterniond quaternion(record.registration.linear());
+    Eigen::Quaterniond quaternion(record.registration.linear());
+    quaternion.normalize();
     trajectory_ << record.timestamp << ' '
                 << record.registration.translation().x() << ' '
                 << record.registration.translation().y() << ' '

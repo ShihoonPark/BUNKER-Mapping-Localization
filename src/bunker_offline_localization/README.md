@@ -5,6 +5,11 @@ against an existing GLIM PLY map with the official `small_gicp` implementation. 
 not include Nav2, vehicle control, map regeneration, GLIM changes, or finished global
 relocalization.
 
+The production objective is not standalone filter 6DoF estimation. The official
+`robot_localization/ekf_node` supplies a stable planar-motion initial guess, and small_gicp
+produces the final full-6DoF `T_map_lidar` pose. The prior EKF/UKF A/B Gate remains archived under
+`results/filter_comparison/`; its production decision is EKF.
+
 ## Transform convention
 
 Every transform follows one rule:
@@ -75,20 +80,25 @@ compatible with ROS Humble.
 
 ```text
 /odom ---- covariance adapter ----\
-                                  robot_localization ekf_node ---- pose prediction
+                                  robot_localization ekf_node ---- SE(2) dx/dy/dyaw
 /imu/data - covariance adapter ---/                                  |
                                                                       v
+last accepted GICP full 6DoF ---- hold z/roll/pitch, update x/y/yaw ---- initial guess
+                                                                      |
 /velodyne_points ---- finite filter/source preprocess ---- small_gicp(map target)
                                                                       |
                                                                       v
-                                            quality gate -> CSV/TUM/report/plots
+                                  full-6DoF T_map_lidar -> quality gate -> CSV/TUM/report/plots
 ```
 
 The adapter republishes separate topics; it never overwrites the bag topics. Its covariance
 values are configurable initial tuning assumptions, not measured covariance. The EKF fuses odom
-`x/y/yaw`, forward velocity and yaw rate plus IMU yaw rate. `two_d_mode` is `false`: the EKF is a
-robust initial-guess motion model, while small_gicp applies a full 6DoF map correction needed for
-the ramp and stage height changes.
+`x/y/yaw`, forward velocity and yaw rate plus IMU yaw rate. Its two poses are projected to SE(2)
+before relative `dx/dy/dyaw` is extracted, so EKF z/roll/pitch cannot leak into the prediction.
+The last accepted GICP pose is the anchor: prediction updates x/y/yaw and holds its z/roll/pitch
+exactly. Small_gicp then applies the full 6DoF map correction needed for the ramp and stage height
+changes. `two_d_mode` remains `false` to preserve the validated filter configuration; unobserved
+filter axes are simply not consumed by the localizer.
 
 The target map is loaded, voxelized, assigned covariances, and indexed with a KD-tree exactly once.
 Every source scan is independently filtered, voxelized, assigned covariances, and registered.
@@ -121,18 +131,17 @@ base_to_lidar:
 ```
 
 With an actual calibration, configure `available: true`, translation `[x,y,z]`, and
-`rotation_xyzw: [qx,qy,qz,qw]`, then remove the test-only static identity publisher. Prediction is
-converted using:
+`rotation_xyzw: [qx,qy,qz,qw]`, then remove the test-only static identity publisher. The public
+conversion interface uses:
 
 ```text
-T_map_lidar(k) = T_map_lidar(anchor)
-                 * inverse(T_base_lidar)
-                 * inverse(T_odom_base(anchor)) * T_odom_base(k)
-                 * T_base_lidar
+T_lidar_base = inverse(T_base_lidar)
+T_map_base = T_map_lidar * T_lidar_base
 ```
 
-Until that extrinsic is measured, this phase validates `T_map_lidar`; final base_link localization
-and `map -> odom` TF validation remain incomplete.
+The direction is unit-tested with a non-identity extrinsic. Until that extrinsic is measured, the
+pipeline writes only `T_map_lidar`; it does not fabricate `T_map_base`, and final base_link
+localization and `map -> odom` TF validation remain incomplete.
 
 ## Initial registration settings
 
@@ -175,11 +184,12 @@ colcon test --packages-select bunker_offline_localization --event-handlers conso
 colcon test-result --verbose
 ```
 
-The 26 tests cover transform direction/signs/inversion, quaternion normalization, TUM parsing,
+The 36 tests cover transform direction/signs/inversion, quaternion normalization, TUM parsing,
 timestamp tolerance, invalid registration rejection, inclusive/disabled/invalid time windows,
 a known-transform synthetic point cloud registered with official small_gicp, both comparison
 launch/config paths, shared sensor fields, disabled IMU orientation, prediction-to-GICP delta
-direction, and comparison statistics.
+direction, comparison statistics, SE(2)-only EKF relative motion, accepted-pose z/roll/pitch hold,
+negative/positive yaw branches, `T_map_base` direction, and Gate report invariants.
 
 ## Run
 
@@ -242,6 +252,13 @@ Full four-run EKF/UKF comparison and combined report:
 ros2 run bunker_offline_localization run_filter_comparison.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/filter_comparison
 ```
 
+Production planar-EKF/full-6DoF-GICP regression Gate. This writes to a separate directory and
+does not replace the archived A/B results:
+
+```bash
+ros2 run bunker_offline_localization run_planar_ekf_gate.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/planar_ekf_gicp_gate
+```
+
 The comparison launch accepts `filter_type:=ekf|ukf` and
 `dataset:=same_bag|independent`. `filter_common.yaml` contains every shared state/sensor field;
 `filter_ukf.yaml` only makes the official defaults `alpha=0.001`, `kappa=0`, and `beta=2`
@@ -257,7 +274,8 @@ transport and scheduling.
 Generated under `results/`:
 
 - `localization.csv`: prediction, raw GICP pose, status/reason, iterations, inliers, raw final
-  error, runtime, point counts, association deltas, and all 36 Hessian entries
+  error, runtime, point counts, association deltas, explicit correction translation/roll/pitch/yaw,
+  and all 36 Hessian entries
 - `estimated_traj_lidar.tum`: accepted `T_map_lidar` poses only
 - `reference_comparison.csv`: timestamp-associated position/yaw/rotation errors
 - `run_summary.json`: ingestion and acceptance counters
@@ -376,3 +394,36 @@ UKF wins none. The current BUNKER initial-guess choice should remain EKF. This c
 for the present untuned, identical-condition Gate and does not claim that EKF is generally
 superior to UKF. Any UKF-specific process-noise/state-observability tuning belongs in a separate
 experiment.
+
+## Accepted-GICP-anchored planar EKF Gate results
+
+Generated separately under `results/planar_ekf_gicp_gate/`; existing same-bag, independent, and
+EKF/UKF A/B result directories remain unchanged.
+
+| Dataset | Scans | Accepted/rejected | Prior accepted | Accepted 6DoF finite |
+|---|---:|---:|---:|---:|
+| 150626 full | 869 | 856 / 13 | 854 | 856 / 856 |
+| 163346 0-50 s | 490 | 486 / 4 | 487 | 486 / 486 |
+
+Independent accepted prediction-to-GICP correction:
+
+| Metric | Mean | p95 | Max |
+|---|---:|---:|---:|
+| Translation | 0.028994 m | 0.106938 m | 0.280748 m |
+| Absolute roll | 0.325622 deg | 1.176557 deg | 3.898094 deg |
+| Absolute pitch | 0.416589 deg | 1.532423 deg | 8.514659 deg |
+| Absolute yaw | 0.127365 deg | 0.371356 deg | 2.482382 deg |
+
+The maximum independent prediction hold error was zero for z, `2.819e-17` rad for roll, and
+`1.665e-16` rad for pitch, confirming that EKF unobserved axes do not accumulate. All accepted
+prediction/GICP poses were finite and their maximum quaternion norm error was `2.220e-16`.
+
+In the observed 25-35 s ramp interval, accepted GICP z covered 0.373813 m with a 0.205983 m
+maximum step. Pitch covered 26.498698 deg with an 8.508549 deg maximum step. The separate
+`independent_ramp_z.png` and `independent_ramp_pitch.png` plots show the intentional held
+prediction and the full-6DoF GICP corrections. The combined report is
+`results/planar_ekf_gicp_gate/planar_ekf_gate_report.md`.
+
+The Gate allows at most two additional independent rejects (0.408 percentage point) relative to
+the prior 487/490 result; the measured result lost one scan. Same-bag acceptance improved by two.
+No small_gicp parameter, voxel size, quality gate, covariance, seed, or retry policy was changed.

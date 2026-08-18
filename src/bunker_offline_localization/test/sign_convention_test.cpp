@@ -28,3 +28,12 @@ TEST(SignConvention, CounterClockwiseNinetyDegreesIsPositiveYaw)
   const auto rpy = bol::rollPitchYaw(ccw.toRotationMatrix());
   EXPECT_NEAR(rpy[2], M_PI_2, 1.0e-12);
 }
+
+TEST(SignConvention, SmallClockwiseYawRemainsSmallAndNegative)
+{
+  const Eigen::AngleAxisd clockwise(-1.0e-4, Eigen::Vector3d::UnitZ());
+  const auto rpy = bol::rollPitchYaw(clockwise.toRotationMatrix());
+  EXPECT_NEAR(rpy[0], 0.0, 1.0e-12);
+  EXPECT_NEAR(rpy[1], 0.0, 1.0e-12);
+  EXPECT_NEAR(rpy[2], -1.0e-4, 1.0e-12);
+}

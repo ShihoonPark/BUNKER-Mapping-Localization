@@ -28,6 +28,7 @@ target_include_directories(small_gicp_vendor SYSTEM INTERFACE
 target_link_libraries(small_gicp_vendor INTERFACE Eigen3::Eigen OpenMP::OpenMP_CXX)
 
 add_library(${PROJECT_NAME}_core
+  src/accepted_pose_predictor.cpp
   src/map_loader.cpp
   src/metrics.cpp
   src/reference_trajectory.cpp
@@ -72,10 +73,12 @@ install(FILES README.md DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
   scripts/generate_filter_comparison.py
   scripts/generate_independent_report.py
+  scripts/generate_planar_ekf_gate_report.py
   scripts/generate_report.py
   scripts/run_filter_comparison.sh
   scripts/run_independent_163346.sh
   scripts/run_offline_smoke_test.sh
+  scripts/run_planar_ekf_gate.sh
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
@@ -101,12 +104,22 @@ if(BUILD_TESTING)
   ament_add_gtest(time_window_test test/time_window_test.cpp)
   target_link_libraries(time_window_test ${PROJECT_NAME}_core)
 
+  ament_add_gtest(prediction_policy_test test/prediction_policy_test.cpp)
+  target_link_libraries(prediction_policy_test ${PROJECT_NAME}_core)
+
   ament_add_test(
     filter_comparison_test
     COMMAND ${Python3_EXECUTABLE} -m pytest -q
       ${CMAKE_CURRENT_SOURCE_DIR}/test/filter_comparison_test.py
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
     APPEND_ENV "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/scripts"
+    ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
+
+  ament_add_test(
+    planar_ekf_gate_report_test
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/planar_ekf_gate_report_test.py
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
     ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
 endif()
 

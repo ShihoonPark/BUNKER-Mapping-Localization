@@ -18,4 +18,10 @@ double rotationAngle(const Eigen::Matrix3d& rotation);
 double wrapAngle(double angle);
 std::array<double, 3> rollPitchYaw(const Eigen::Matrix3d& rotation);
 
+// The caller supplies the measured p_base = T_base_lidar * p_lidar calibration. This returns
+// T_map_base = T_map_lidar * T_lidar_base without guessing an unavailable extrinsic.
+Eigen::Isometry3d mapBaseFromMapLidar(
+  const Eigen::Isometry3d& T_map_lidar,
+  const Eigen::Isometry3d& T_base_lidar);
+
 }  // namespace bunker_offline_localization

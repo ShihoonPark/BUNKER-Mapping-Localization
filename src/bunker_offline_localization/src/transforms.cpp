@@ -59,8 +59,24 @@ double wrapAngle(double angle)
 
 std::array<double, 3> rollPitchYaw(const Eigen::Matrix3d& rotation)
 {
-  const Eigen::Vector3d rpy = rotation.eulerAngles(2, 1, 0).reverse();
-  return {wrapAngle(rpy.x()), wrapAngle(rpy.y()), wrapAngle(rpy.z())};
+  // ROS fixed-axis XYZ (equivalent to intrinsic ZYX). Avoid Eigen::eulerAngles here: its valid
+  // branch can represent a tiny negative yaw as an equivalent near-pi roll/pitch/yaw triple,
+  // which is unsuitable for a planar motion state.
+  const double roll = std::atan2(rotation(2, 1), rotation(2, 2));
+  const double pitch = std::atan2(
+    -rotation(2, 0), std::hypot(rotation(2, 1), rotation(2, 2)));
+  const double yaw = std::atan2(rotation(1, 0), rotation(0, 0));
+  return {wrapAngle(roll), wrapAngle(pitch), wrapAngle(yaw)};
+}
+
+Eigen::Isometry3d mapBaseFromMapLidar(
+  const Eigen::Isometry3d& T_map_lidar,
+  const Eigen::Isometry3d& T_base_lidar)
+{
+  if (!isFiniteTransform(T_map_lidar) || !isFiniteTransform(T_base_lidar)) {
+    throw std::invalid_argument("Map/LiDAR pose and base/LiDAR extrinsic must be finite");
+  }
+  return T_map_lidar * T_base_lidar.inverse();
 }
 
 }  // namespace bunker_offline_localization

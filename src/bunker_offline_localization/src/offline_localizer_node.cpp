@@ -1,3 +1,4 @@
+#include "bunker_offline_localization/accepted_pose_predictor.hpp"
 #include "bunker_offline_localization/map_loader.hpp"
 #include "bunker_offline_localization/metrics.hpp"
 #include "bunker_offline_localization/reference_trajectory.hpp"
@@ -371,6 +372,10 @@ private:
     record.prediction_time_difference = std::numeric_limits<double>::quiet_NaN();
     record.filter_runtime_ms = std::numeric_limits<double>::quiet_NaN();
     record.filter_runtime_time_difference = std::numeric_limits<double>::quiet_NaN();
+    record.correction_translation_m = std::numeric_limits<double>::quiet_NaN();
+    record.correction_roll_rad = std::numeric_limits<double>::quiet_NaN();
+    record.correction_pitch_rad = std::numeric_limits<double>::quiet_NaN();
+    record.correction_yaw_rad = std::numeric_limits<double>::quiet_NaN();
     record.prediction_approximation = prediction_approximation_;
 
     std::optional<PoseAssociation> reference_association;
@@ -412,12 +417,12 @@ private:
       anchor_T_map_lidar_ = initial_T_map_lidar_;
     }
 
-    // p_base = T_base_lidar*p_lidar. Propagate relative base motion from the last accepted
-    // correction anchor, then convert back to a LiDAR pose.
-    const Eigen::Isometry3d T_anchor_base_current =
-      anchor_prediction_->inverse() * association->prediction.T_odom_base;
-    record.prediction = anchor_T_map_lidar_ * T_base_lidar_.inverse() *
-      T_anchor_base_current * T_base_lidar_;
+    // The EKF is only a planar motion source. Anchor every prediction to the last accepted
+    // full-6DoF GICP LiDAR pose so unobserved EKF z/roll/pitch can never accumulate.
+    const PlanarRelativeMotion planar_motion = ekfPlanarRelativeMotion(
+      *anchor_prediction_, association->prediction.T_odom_base);
+    record.prediction = predictMapLidarFromAcceptedPose(
+      anchor_T_map_lidar_, planar_motion);
     record.prediction_available = true;
 
     if (message.header.frame_id != expected_lidar_frame_) {
@@ -447,6 +452,15 @@ private:
       record.runtime_ms = registration.runtime_ms;
       record.downsampled_points = registration.source_downsampled_points;
       record.hessian = registration.hessian;
+      if (isFiniteTransform(registration.T_map_lidar)) {
+        const Eigen::Isometry3d correction = predictionToRegistrationDelta(
+          record.prediction, registration.T_map_lidar);
+        const auto correction_rpy = rollPitchYaw(correction.linear());
+        record.correction_translation_m = correction.translation().norm();
+        record.correction_roll_rad = correction_rpy[0];
+        record.correction_pitch_rad = correction_rpy[1];
+        record.correction_yaw_rad = correction_rpy[2];
+      }
       record.reject_reason = evaluateRegistration(
         registration, record.prediction, quality_settings_);
       record.accepted = record.reject_reason == RejectReason::None;
@@ -509,7 +523,12 @@ private:
            << "  \"time_window_start_offset_sec\": " << time_window_.startOffset() << ",\n"
            << "  \"time_window_end_offset_sec\": " << time_window_.endOffset() << ",\n"
            << "  \"prediction_uses_identity_base_to_lidar_approximation\": "
-           << (prediction_approximation_ ? "true" : "false") << "\n"
+           << (prediction_approximation_ ? "true" : "false") << ",\n"
+           << "  \"prediction_policy\": "
+           << "\"accepted_gicp_6dof_plus_ekf_planar_delta\",\n"
+           << "  \"output_frame\": \"T_map_lidar\",\n"
+           << "  \"map_base_output_available\": "
+           << (prediction_approximation_ ? "false" : "true") << "\n"
            << "}\n";
     summary_written_ = true;
   }

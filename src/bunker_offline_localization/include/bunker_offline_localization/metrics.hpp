@@ -57,6 +57,10 @@ struct LocalizationRecord {
   double runtime_ms{0.0};
   double filter_runtime_ms{0.0};
   double filter_runtime_time_difference{0.0};
+  double correction_translation_m{0.0};
+  double correction_roll_rad{0.0};
+  double correction_pitch_rad{0.0};
+  double correction_yaw_rad{0.0};
   std::size_t input_points{0};
   std::size_t finite_points{0};
   std::size_t downsampled_points{0};
