@@ -59,7 +59,7 @@ ament_target_dependencies(covariance_adapter_node nav_msgs rclcpp sensor_msgs)
 add_executable(offline_localizer_node src/offline_localizer_node.cpp)
 target_compile_options(offline_localizer_node PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(offline_localizer_node ${PROJECT_NAME}_core)
-ament_target_dependencies(offline_localizer_node geometry_msgs nav_msgs rclcpp sensor_msgs)
+ament_target_dependencies(offline_localizer_node geometry_msgs nav_msgs rclcpp sensor_msgs std_msgs)
 
 add_executable(filter_timing_monitor_node src/filter_timing_monitor_node.cpp)
 target_compile_options(filter_timing_monitor_node PRIVATE -Wall -Wextra -Wpedantic)

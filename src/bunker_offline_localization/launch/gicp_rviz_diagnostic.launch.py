@@ -27,6 +27,41 @@ VALID_ROLES = {
     "recovery_representative",
     "stable_stage_representative",
 }
+VALID_MODES = {"continuous", "selected", "full_bag"}
+WINDOW_ORIGIN_TIMESTAMP = 1786692827.2210245
+
+
+def _validate_mode(mode, selected_role, playback_rate, max_scans):
+    if mode not in VALID_MODES:
+        raise RuntimeError("mode must be continuous, selected, or full_bag")
+    if mode == "selected" and selected_role not in VALID_ROLES:
+        raise RuntimeError(f"unsupported selected_role: {selected_role}")
+    if mode == "full_bag":
+        if abs(playback_rate - 1.0) > 1.0e-12:
+            raise RuntimeError("full_bag mode requires playback_rate:=1.0")
+        if max_scans != 0:
+            raise RuntimeError("full_bag mode requires max_scans:=0")
+
+
+def _window_parameters(mode):
+    return {
+        "time_window.enabled": mode != "full_bag",
+        "time_window.origin_timestamp": WINDOW_ORIGIN_TIMESTAMP,
+        "time_window.start_offset_sec": 0.0,
+        "time_window.end_offset_sec": 50.0,
+    }
+
+
+def _bag_player_command(mode, bag_path, playback_rate):
+    command = [
+        "ros2", "bag", "play", bag_path,
+        "--clock", "100.0", "--rate", "1.0" if mode == "full_bag" else playback_rate,
+        "--delay", "3.0", "--disable-keyboard-controls",
+    ]
+    if mode == "full_bag":
+        command.extend(["--wait-for-all-acked", "5000"])
+    command.extend(["--topics", "/odom", "/imu/data", "/velodyne_points"])
+    return command
 
 
 def _value(context, name):
@@ -37,27 +72,36 @@ def _setup(context):
     share = Path(get_package_share_directory("bunker_offline_localization"))
     mode = _value(context, "mode")
     selected_role = _value(context, "selected_role")
-    if mode not in {"continuous", "selected"}:
-        raise RuntimeError("mode must be continuous or selected")
-    if mode == "selected" and selected_role not in VALID_ROLES:
-        raise RuntimeError(f"unsupported selected_role: {selected_role}")
+    _validate_mode(
+        mode,
+        selected_role,
+        float(_value(context, "playback_rate")),
+        int(_value(context, "max_scans")),
+    )
 
-    handoff_path = Path(_value(context, "selected_scans_handoff"))
-    with handoff_path.open(encoding="utf-8") as stream:
-        handoff = json.load(stream)
-    selected = handoff["selected_scans"]
-    roles = [item["selection_role"] for item in selected]
-    timestamps = [float(item["timestamp"]) for item in selected]
-    if set(roles) != VALID_ROLES:
-        raise RuntimeError("selected scan handoff does not contain the fixed five roles")
-    with Path(_value(context, "production_localization_csv")).open(
-        newline="", encoding="utf-8"
-    ) as stream:
-        production_rows = list(csv.DictReader(stream))
-    audit_rows = [production_rows[int(item["row_index"])] for item in selected]
-    for item, row in zip(selected, audit_rows):
-        if abs(float(row["timestamp"]) - float(item["timestamp"])) > 1.0e-6:
-            raise RuntimeError("handoff row_index does not match production localization timestamp")
+    selected = []
+    roles = []
+    timestamps = []
+    audit_rows = []
+    if mode != "full_bag":
+        handoff_path = Path(_value(context, "selected_scans_handoff"))
+        with handoff_path.open(encoding="utf-8") as stream:
+            handoff = json.load(stream)
+        selected = handoff["selected_scans"]
+        roles = [item["selection_role"] for item in selected]
+        timestamps = [float(item["timestamp"]) for item in selected]
+        if set(roles) != VALID_ROLES:
+            raise RuntimeError("selected scan handoff does not contain the fixed five roles")
+        with Path(_value(context, "production_localization_csv")).open(
+            newline="", encoding="utf-8"
+        ) as stream:
+            production_rows = list(csv.DictReader(stream))
+        audit_rows = [production_rows[int(item["row_index"])] for item in selected]
+        for item, row in zip(selected, audit_rows):
+            if abs(float(row["timestamp"]) - float(item["timestamp"])) > 1.0e-6:
+                raise RuntimeError(
+                    "handoff row_index does not match production localization timestamp"
+                )
 
     def poses(prefix):
         values = []
@@ -69,16 +113,16 @@ def _setup(context):
     independent_config = str(share / "config" / "independent_163346.yaml")
     diagnostic_config = str(share / "config" / "gicp_rviz_diagnostic.yaml")
     ekf_config = str(share / "config" / "ekf.yaml")
-    window_parameters = {
-        "time_window.enabled": True,
-        "time_window.origin_timestamp": 1786692827.2210245,
-        "time_window.start_offset_sec": 0.0,
-        "time_window.end_offset_sec": 50.0,
-    }
-    output_root = _value(context, "output_directory")
+    full_bag = mode == "full_bag"
+    window_parameters = _window_parameters(mode)
+    output_root = _value(
+        context, "full_bag_output_directory" if full_bag else "output_directory"
+    )
     runtime_results = _value(context, "results_directory")
     if not runtime_results:
-        runtime_results = str(Path(output_root) / f"rviz_{mode}_run")
+        runtime_results = str(
+            Path(output_root) / ("localization" if full_bag else f"rviz_{mode}_run")
+        )
     publish_visualization = _value(context, "publish_visualization").lower() == "true"
     diagnostics = {
         "diagnostics.enabled": True,
@@ -90,16 +134,26 @@ def _setup(context):
             _value(context, "rviz_max_correspondence_lines")
         ),
         "diagnostics.output_directory": output_root,
-        "diagnostics.selected_roles": roles,
-        "diagnostics.selected_timestamps": timestamps,
-        "diagnostics.selected_prediction_poses_xyz_xyzw": poses("pred"),
-        "diagnostics.selected_registration_poses_xyz_xyzw": poses("gicp"),
-        "diagnostics.selected_inliers": [int(row["num_inliers"]) for row in audit_rows],
-        "diagnostics.selected_iterations": [int(row["iterations"]) for row in audit_rows],
-        "diagnostics.selected_final_errors": [float(row["final_error"]) for row in audit_rows],
-        "diagnostics.selected_registration_runtimes_ms": [float(row["runtime_ms"]) for row in audit_rows],
         "diagnostics.hold_selected_role": selected_role if mode == "selected" else "",
+        "full_bag.enabled": full_bag,
+        "full_bag.timing_gap_threshold_sec": 1.25,
+        "full_bag.replay_rate": 1.0,
+        "full_bag.expected_lidar_inputs": 1075,
+        "full_bag.eof_topic": "/localization/full_bag_eof",
     }
+    if not full_bag:
+        diagnostics.update({
+            "diagnostics.selected_roles": roles,
+            "diagnostics.selected_timestamps": timestamps,
+            "diagnostics.selected_prediction_poses_xyz_xyzw": poses("pred"),
+            "diagnostics.selected_registration_poses_xyz_xyzw": poses("gicp"),
+            "diagnostics.selected_inliers": [int(row["num_inliers"]) for row in audit_rows],
+            "diagnostics.selected_iterations": [int(row["iterations"]) for row in audit_rows],
+            "diagnostics.selected_final_errors": [float(row["final_error"]) for row in audit_rows],
+            "diagnostics.selected_registration_runtimes_ms": [
+                float(row["runtime_ms"]) for row in audit_rows
+            ],
+        })
 
     adapter = Node(
         package="bunker_offline_localization",
@@ -157,12 +211,9 @@ def _setup(context):
         output="screen",
     )
     bag_player = ExecuteProcess(
-        cmd=[
-            "ros2", "bag", "play", _value(context, "bag_path"),
-            "--clock", "100.0", "--rate", _value(context, "playback_rate"),
-            "--delay", "3.0", "--disable-keyboard-controls",
-            "--topics", "/odom", "/imu/data", "/velodyne_points",
-        ],
+        cmd=_bag_player_command(
+            mode, _value(context, "bag_path"), _value(context, "playback_rate")
+        ),
         output="screen",
     )
     actions = [adapter, ekf, localizer, base_to_lidar, lidar_to_imu]
@@ -189,6 +240,44 @@ def _setup(context):
                 ],
             )],
         )))
+    elif mode == "full_bag":
+        eof_notifier = ExecuteProcess(
+            cmd=[
+                "ros2", "topic", "pub", "--once",
+                "/localization/full_bag_eof", "std_msgs/msg/Empty", "{}",
+            ],
+            output="screen",
+        )
+
+        def on_full_bag_player_exit(event, _context):
+            if event.returncode != 0:
+                return [
+                    LogInfo(
+                        msg=(
+                            "Full-bag playback exited before normal EOF "
+                            f"(return code {event.returncode}); not sending EOF sentinel."
+                        )
+                    ),
+                    EmitEvent(
+                        event=Shutdown(reason="full-bag playback exited abnormally")
+                    ),
+                ]
+            return [TimerAction(
+                period=3.0,
+                actions=[
+                    LogInfo(msg="Full-bag playback reached EOF; finalizing without shutdown."),
+                    eof_notifier,
+                ],
+            )]
+
+        actions.append(RegisterEventHandler(OnProcessExit(
+            target_action=bag_player,
+            on_exit=on_full_bag_player_exit,
+        )))
+        actions.append(RegisterEventHandler(OnProcessExit(
+            target_action=localizer,
+            on_exit=[EmitEvent(event=Shutdown(reason="full-bag localizer exited"))],
+        )))
     actions.append(bag_player)
     return actions
 
@@ -214,6 +303,9 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "output_directory", default_value=f"{root}/results/gicp_correspondence_rviz_diagnostic"
+        ),
+        DeclareLaunchArgument(
+            "full_bag_output_directory", default_value=f"{root}/results/gicp_full_bag"
         ),
         DeclareLaunchArgument("results_directory", default_value=""),
         DeclareLaunchArgument(

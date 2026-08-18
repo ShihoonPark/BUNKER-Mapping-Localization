@@ -13,10 +13,12 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/empty.hpp>
 
 #include <Eigen/Geometry>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -76,6 +78,19 @@ struct PendingScan {
   std::chrono::steady_clock::time_point callback_start;
 };
 
+constexpr std::array<RejectReason, 10> kRejectReasons = {
+  RejectReason::NotConverged,
+  RejectReason::LowInliers,
+  RejectReason::HighError,
+  RejectReason::TranslationJump,
+  RejectReason::RotationJump,
+  RejectReason::NonfiniteTransform,
+  RejectReason::NoPrediction,
+  RejectReason::TimestampMismatch,
+  RejectReason::EmptyScan,
+  RejectReason::RegistrationException,
+};
+
 class OfflineLocalizerNode : public rclcpp::Node {
 public:
   OfflineLocalizerNode()
@@ -128,6 +143,29 @@ public:
       declare_parameter<double>("time_window.origin_timestamp", 0.0),
       declare_parameter<double>("time_window.start_offset_sec", 0.0),
       declare_parameter<double>("time_window.end_offset_sec", 0.0));
+    full_bag_mode_ = declare_parameter<bool>("full_bag.enabled", false);
+    const double timing_gap_threshold_sec = declare_parameter<double>(
+      "full_bag.timing_gap_threshold_sec", 1.25);
+    full_bag_replay_rate_ = declare_parameter<double>("full_bag.replay_rate", 1.0);
+    full_bag_expected_lidar_inputs_ = declare_parameter<int>(
+      "full_bag.expected_lidar_inputs", 0);
+    full_bag_eof_topic_ = declare_parameter<std::string>(
+      "full_bag.eof_topic", "/localization/full_bag_eof");
+    if (full_bag_mode_) {
+      if (time_window_.enabled()) {
+        throw std::invalid_argument("full_bag mode requires time_window.enabled=false");
+      }
+      if (max_scans_ != 0) {
+        throw std::invalid_argument("full_bag mode requires max_scans=0");
+      }
+      if (std::abs(full_bag_replay_rate_ - 1.0) > 1.0e-12) {
+        throw std::invalid_argument("full_bag mode requires 1x replay");
+      }
+      if (full_bag_expected_lidar_inputs_ <= 0) {
+        throw std::invalid_argument("full_bag mode requires a positive metadata LiDAR count");
+      }
+      full_bag_state_.emplace(time_window_.originTimestamp(), timing_gap_threshold_sec);
+    }
 
     RegistrationSettings registration_settings;
     registration_settings.num_threads = declare_parameter<int>("num_threads", 4);
@@ -271,6 +309,11 @@ public:
     filter_timing_subscription_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
       filter_timing_topic, rclcpp::QoS(500),
       std::bind(&OfflineLocalizerNode::filterTimingCallback, this, std::placeholders::_1));
+    if (full_bag_mode_) {
+      bag_eof_subscription_ = create_subscription<std_msgs::msg::Empty>(
+        full_bag_eof_topic_, rclcpp::QoS(1).reliable().durability_volatile(),
+        std::bind(&OfflineLocalizerNode::bagEofCallback, this, std::placeholders::_1));
+    }
 
     if (reference_) {
       RCLCPP_INFO(
@@ -289,6 +332,11 @@ public:
       RCLCPP_INFO(
         get_logger(), "Using inclusive bag-relative window %.3f..%.3f s from %.9f",
         time_window_.startOffset(), time_window_.endOffset(), time_window_.originTimestamp());
+    } else if (full_bag_mode_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Full-bag mode: no time window, 1x replay, gap threshold %.3f s; waiting for EOF on %s",
+        full_bag_state_->timingGapThresholdSec(), full_bag_eof_topic_.c_str());
     }
   }
 
@@ -348,7 +396,11 @@ private:
     ++total_clouds_received_;
     const double timestamp = stampSeconds(message->header.stamp);
     if (!std::isfinite(timestamp)) {
+      ++skipped_invalid_timestamp_;
       return;
+    }
+    if (full_bag_state_) {
+      full_bag_state_->observeLidarTimestamp(timestamp);
     }
     const TimeWindowPosition window_position = time_window_.classify(timestamp);
     if (window_position == TimeWindowPosition::Before) {
@@ -412,6 +464,24 @@ private:
       filter_runtimes_.pop_front();
     }
     drainPending(false);
+  }
+
+  void bagEofCallback(std_msgs::msg::Empty::ConstSharedPtr)
+  {
+    if (!full_bag_state_ || full_bag_state_->bagEofReceived()) {
+      return;
+    }
+    pending_scans_at_eof_ = pending_scans_.size();
+    drainPending(true);
+    pending_scans_after_eof_flush_ = pending_scans_.size();
+    full_bag_state_->markBagEofReceived();
+    writeRunSummary();
+    writeFullBagSummary();
+    RCLCPP_INFO(
+      get_logger(),
+      "Full-bag EOF finalized: lidar=%zu processed=%zu accepted=%zu rejected=%zu; "
+      "keeping final RViz state until Ctrl+C",
+      total_clouds_received_, processed_scans_, accepted_scans_, rejected_scans_);
   }
 
   std::optional<PredictionAssociation> nearestPrediction(const double timestamp) const
@@ -626,6 +696,10 @@ private:
     } else {
       ++rejected_scans_;
     }
+    if (full_bag_state_) {
+      full_bag_state_->recordProcessed(
+        record.timestamp, record.accepted, record.reject_reason);
+    }
     if (std::isfinite(record.filter_runtime_ms)) {
       ++filter_timing_associated_scans_;
     }
@@ -683,6 +757,121 @@ private:
     summary_written_ = true;
   }
 
+  void writeFullBagSummary()
+  {
+    if (!full_bag_state_ || full_bag_summary_written_) {
+      return;
+    }
+    std::filesystem::create_directories(results_directory_);
+    std::ofstream output(results_directory_ + "/full_bag_summary.json", std::ios::trunc);
+    if (!output) {
+      throw std::runtime_error("Failed to open full_bag_summary.json");
+    }
+    output << std::setprecision(17);
+    const auto writeOptional = [&output](const std::optional<double>& value) {
+        if (value) {
+          output << *value;
+        } else {
+          output << "null";
+        }
+      };
+    const auto relative = [this](const std::optional<double>& timestamp) {
+        return timestamp ? std::optional<double>(
+          *timestamp - full_bag_state_->bagOriginTimestamp()) : std::nullopt;
+    };
+    const std::size_t skipped_total = skipped_before_window_ + skipped_after_window_ +
+      skipped_before_reference_ + skipped_invalid_timestamp_;
+    const bool all_bag_lidar_inputs_received = total_clouds_received_ ==
+      static_cast<std::size_t>(full_bag_expected_lidar_inputs_);
+    output << "{\n"
+           << "  \"mode\": \"full_bag\",\n"
+           << "  \"replay_rate\": " << full_bag_replay_rate_ << ",\n"
+           << "  \"time_window_enabled\": false,\n"
+           << "  \"bag_eof_received\": "
+           << (full_bag_state_->bagEofReceived() ? "true" : "false") << ",\n"
+           << "  \"process_survived_to_bag_eof\": "
+           << (full_bag_state_->bagEofReceived() ? "true" : "false") << ",\n"
+           << "  \"crash_detected\": false,\n"
+           << "  \"bag_metadata_lidar_inputs\": "
+           << full_bag_expected_lidar_inputs_ << ",\n"
+           << "  \"total_lidar_inputs\": " << total_clouds_received_ << ",\n"
+           << "  \"all_bag_lidar_inputs_received\": "
+           << (all_bag_lidar_inputs_received ? "true" : "false")
+           << ",\n"
+           << "  \"finite_timestamp_lidar_inputs\": "
+           << full_bag_state_->lidarTimestampCount() << ",\n"
+           << "  \"processed_scans\": " << processed_scans_ << ",\n"
+           << "  \"accepted_scans\": " << accepted_scans_ << ",\n"
+           << "  \"rejected_scans\": " << rejected_scans_ << ",\n"
+           << "  \"skipped_scans\": " << skipped_total << ",\n"
+           << "  \"skipped_before_window\": " << skipped_before_window_ << ",\n"
+           << "  \"skipped_after_window\": " << skipped_after_window_ << ",\n"
+           << "  \"skipped_before_reference\": " << skipped_before_reference_ << ",\n"
+           << "  \"skipped_invalid_timestamp\": " << skipped_invalid_timestamp_ << ",\n"
+           << "  \"pending_scans_at_eof\": " << pending_scans_at_eof_ << ",\n"
+           << "  \"pending_scans_after_eof_flush\": "
+           << pending_scans_after_eof_flush_ << ",\n"
+           << "  \"all_lidar_inputs_accounted\": "
+           << (total_clouds_received_ == processed_scans_ + skipped_total ? "true" : "false")
+           << ",\n"
+           << "  \"reject_reason_counts\": {\n";
+    for (std::size_t index = 0; index < kRejectReasons.size(); ++index) {
+      const auto reason = kRejectReasons[index];
+      output << "    \"" << toString(reason) << "\": "
+             << full_bag_state_->rejectCount(reason)
+             << (index + 1U == kRejectReasons.size() ? "\n" : ",\n");
+    }
+    output << "  },\n"
+           << "  \"first_timing_gap\": {\n"
+           << "    \"detected\": "
+           << (full_bag_state_->firstTimingGapDetected() ? "true" : "false") << ",\n"
+           << "    \"threshold_sec\": "
+           << full_bag_state_->timingGapThresholdSec() << ",\n"
+           << "    \"previous_timestamp\": ";
+    writeOptional(full_bag_state_->firstGapPreviousTimestamp());
+    output << ",\n    \"current_timestamp\": ";
+    writeOptional(full_bag_state_->firstGapCurrentTimestamp());
+    output << ",\n    \"previous_bag_relative_sec\": ";
+    writeOptional(relative(full_bag_state_->firstGapPreviousTimestamp()));
+    output << ",\n    \"current_bag_relative_sec\": ";
+    writeOptional(relative(full_bag_state_->firstGapCurrentTimestamp()));
+    output << ",\n    \"duration_sec\": ";
+    writeOptional(full_bag_state_->firstGapDurationSec());
+    output << "\n  },\n"
+           << "  \"after_first_timing_gap\": {\n"
+           << "    \"processed_scans\": "
+           << full_bag_state_->processedAfterFirstGap() << ",\n"
+           << "    \"accepted_scans\": "
+           << full_bag_state_->acceptedAfterFirstGap() << ",\n"
+           << "    \"rejected_scans\": "
+           << full_bag_state_->rejectedAfterFirstGap() << ",\n"
+           << "    \"reject_reason_counts\": {\n";
+    for (std::size_t index = 0; index < kRejectReasons.size(); ++index) {
+      const auto reason = kRejectReasons[index];
+      output << "      \"" << toString(reason) << "\": "
+             << full_bag_state_->rejectCountAfterFirstGap(reason)
+             << (index + 1U == kRejectReasons.size() ? "\n" : ",\n");
+    }
+    output << "    },\n"
+           << "    \"first_accepted_timestamp\": ";
+    writeOptional(full_bag_state_->firstAcceptedAfterGapTimestamp());
+    output << ",\n    \"first_accepted_bag_relative_sec\": ";
+    writeOptional(relative(full_bag_state_->firstAcceptedAfterGapTimestamp()));
+    output << ",\n    \"recovered\": "
+           << (full_bag_state_->recoveredAfterFirstGap() ? "true" : "false")
+           << "\n  },\n"
+           << "  \"final_accepted_timestamp\": ";
+    writeOptional(full_bag_state_->finalAcceptedTimestamp());
+    output << ",\n  \"final_accepted_bag_relative_sec\": ";
+    writeOptional(relative(full_bag_state_->finalAcceptedTimestamp()));
+    output << ",\n  \"last_lidar_timestamp\": ";
+    writeOptional(full_bag_state_->lastLidarTimestamp());
+    output << ",\n  \"last_lidar_bag_relative_sec\": ";
+    writeOptional(relative(full_bag_state_->lastLidarTimestamp()));
+    output << "\n}\n";
+    full_bag_summary_written_ = true;
+  }
+
   std::string map_path_;
   std::string reference_path_;
   std::string results_directory_;
@@ -696,6 +885,10 @@ private:
   bool require_filter_timing_{false};
   std::string filter_type_label_;
   int max_scans_{};
+  bool full_bag_mode_{false};
+  double full_bag_replay_rate_{1.0};
+  int full_bag_expected_lidar_inputs_{};
+  std::string full_bag_eof_topic_;
   std::string expected_lidar_frame_;
   QualityGateSettings quality_settings_;
   Eigen::Isometry3d T_base_lidar_{Eigen::Isometry3d::Identity()};
@@ -706,6 +899,7 @@ private:
   std::unique_ptr<LatencyWriter> latency_writer_;
   std::unique_ptr<GicpDiagnostics> diagnostics_;
   ContinuousScanState continuous_scan_state_;
+  std::optional<FullBagRunState> full_bag_state_;
   std::deque<TimedPrediction> predictions_;
   std::deque<TimedFilterRuntime> filter_runtimes_;
   std::deque<PendingScan> pending_scans_;
@@ -716,19 +910,24 @@ private:
   std::size_t skipped_before_window_{0};
   std::size_t skipped_after_window_{0};
   std::size_t skipped_before_reference_{0};
+  std::size_t skipped_invalid_timestamp_{0};
   std::size_t processed_scans_{0};
   std::size_t accepted_scans_{0};
   std::size_t rejected_scans_{0};
   std::size_t filter_timing_associated_scans_{0};
   std::size_t raw_map_points_{0};
   std::size_t target_map_points_{0};
+  std::size_t pending_scans_at_eof_{0};
+  std::size_t pending_scans_after_eof_flush_{0};
   bool finished_{false};
   bool summary_written_{false};
+  bool full_bag_summary_written_{false};
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr prediction_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr
     filter_timing_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr bag_eof_subscription_;
 };
 
 }  // namespace

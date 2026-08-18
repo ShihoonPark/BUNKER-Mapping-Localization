@@ -751,6 +751,24 @@ Hold the fixed largest-negative-z anomaly for inspection:
 cd /home/a/Desktop/shihoon/bunker_localization_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch bunker_offline_localization gicp_rviz_diagnostic.launch.py mode:=selected selected_role:=largest_negative_dz
 ```
 
+Full independent bag replay (metadata start through bag EOF, forced 1x, no time window):
+
+```bash
+cd /home/a/Desktop/shihoon/bunker_localization_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch bunker_offline_localization gicp_rviz_diagnostic.launch.py mode:=full_bag
+```
+
+`full_bag` keeps the production initialization, EKF, accepted-pose prediction, small_gicp, quality
+gate, visualization topics, and transform convention unchanged. It rejects non-1x playback and a
+nonzero `max_scans`, disables both adapter and localizer time windows, and writes only to the
+separate `results/gicp_full_bag/` tree. A diagnostic-only 1.25 s consecutive-LiDAR threshold
+identifies the first large gap; it does not filter scans or alter registration. At bag EOF a
+5 s reliable-delivery wait prevents the final bag message from being lost, then a sentinel flushes
+pending scans through the normal no-prediction/timestamp-mismatch paths and writes
+`localization/full_bag_summary.json`. The localizer and RViz then remain alive with the final map,
+registered scan, pose, and path until Ctrl+C. The summary includes all LiDAR accounting, rejection
+counts by reason, post-gap behavior/recovery, final accepted time, EOF survival status, and the
+metadata count of 1075 LiDAR scans versus the actual subscriber count.
+
 Use `launch_rviz:=false` for a headless publisher run and set
 `publish_correspondences_every_n_scans:=0` to disable only correspondence visualization. Neither
 option skips map matching. The measured 490-scan run produced 486 accepted and 4 rejected poses,

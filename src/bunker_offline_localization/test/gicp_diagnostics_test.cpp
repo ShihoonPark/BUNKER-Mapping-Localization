@@ -156,3 +156,51 @@ TEST(GicpDiagnosticLatency, SteadyClockDurationIsFiniteAndNonnegative)
   EXPECT_FALSE(bol::isValidLatencyMilliseconds(-0.001));
   EXPECT_FALSE(bol::isValidLatencyMilliseconds(std::numeric_limits<double>::quiet_NaN()));
 }
+
+TEST(FullBagRunState, DetectsFirstLargeGapAndRecordsRecoveryWithoutSelectingByOutcome)
+{
+  constexpr double origin = 1000.0;
+  bol::FullBagRunState state(origin, 1.25);
+  state.observeLidarTimestamp(origin + 61.2);
+  state.observeLidarTimestamp(origin + 62.4);
+  state.recordProcessed(origin + 62.4, false, bol::RejectReason::TimestampMismatch);
+  state.observeLidarTimestamp(origin + 63.7);  // First gap above threshold.
+  state.recordProcessed(origin + 63.7, false, bol::RejectReason::NoPrediction);
+  state.recordProcessed(origin + 63.8, false, bol::RejectReason::TimestampMismatch);
+  state.recordProcessed(origin + 64.0, true, bol::RejectReason::None);
+  state.recordProcessed(origin + 65.0, true, bol::RejectReason::None);
+  state.markBagEofReceived();
+
+  ASSERT_TRUE(state.firstTimingGapDetected());
+  ASSERT_TRUE(state.firstGapPreviousTimestamp());
+  ASSERT_TRUE(state.firstGapCurrentTimestamp());
+  ASSERT_TRUE(state.firstGapDurationSec());
+  EXPECT_DOUBLE_EQ(*state.firstGapPreviousTimestamp(), origin + 62.4);
+  EXPECT_DOUBLE_EQ(*state.firstGapCurrentTimestamp(), origin + 63.7);
+  EXPECT_NEAR(*state.firstGapDurationSec(), 1.3, 1.0e-12);
+  EXPECT_EQ(state.rejectCount(bol::RejectReason::NoPrediction), 1U);
+  EXPECT_EQ(state.rejectCount(bol::RejectReason::TimestampMismatch), 2U);
+  EXPECT_EQ(state.processedAfterFirstGap(), 4U);
+  EXPECT_EQ(state.acceptedAfterFirstGap(), 2U);
+  EXPECT_EQ(state.rejectedAfterFirstGap(), 2U);
+  EXPECT_EQ(state.rejectCountAfterFirstGap(bol::RejectReason::NoPrediction), 1U);
+  EXPECT_EQ(state.rejectCountAfterFirstGap(bol::RejectReason::TimestampMismatch), 1U);
+  ASSERT_TRUE(state.firstAcceptedAfterGapTimestamp());
+  EXPECT_DOUBLE_EQ(*state.firstAcceptedAfterGapTimestamp(), origin + 64.0);
+  ASSERT_TRUE(state.finalAcceptedTimestamp());
+  EXPECT_DOUBLE_EQ(*state.finalAcceptedTimestamp(), origin + 65.0);
+  EXPECT_TRUE(state.recoveredAfterFirstGap());
+  EXPECT_TRUE(state.bagEofReceived());
+}
+
+TEST(FullBagRunState, NoDetectedGapDoesNotClaimRecovery)
+{
+  bol::FullBagRunState state(1000.0, 1.25);
+  state.observeLidarTimestamp(1001.0);
+  state.observeLidarTimestamp(1001.1);
+  state.recordProcessed(1001.1, true, bol::RejectReason::None);
+  EXPECT_FALSE(state.firstTimingGapDetected());
+  EXPECT_FALSE(state.firstGapDurationSec());
+  EXPECT_FALSE(state.recoveredAfterFirstGap());
+  EXPECT_EQ(state.processedAfterFirstGap(), 0U);
+}
