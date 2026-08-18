@@ -139,6 +139,7 @@ def test_known_synthetic_stage_height():
     )
     assert result["estimated_stage_height_m"] == pytest.approx(0.42, abs=1.0e-8)
     assert result["status"] == "HEIGHT_PASS"
+    assert result["relative_error_percent"] == pytest.approx(0.0)
 
 
 def test_unavailable_physical_height_gives_pending():
@@ -154,12 +155,100 @@ def test_unavailable_physical_height_gives_pending():
     assert result["absolute_error_m"] is None
 
 
+def candidate(candidate_id, start, end, samples=7):
+    return {
+        "candidate_id": candidate_id,
+        "start_offset_sec": start,
+        "end_offset_sec": end,
+        "sample_count": samples,
+    }
+
+
+def test_temporal_plateau_partition_is_independent_of_measured_height():
+    candidates = [
+        candidate(1, 20.0, 21.0), candidate(2, 23.0, 24.0),
+        candidate(3, 33.0, 34.0), candidate(4, 36.0, 37.0),
+    ]
+    selection = GATE.classify_plateau_candidates(
+        candidates, 25.0, 35.0,
+        {
+            "method": "temporal_partition_around_ramp_window",
+            "measured_height_used_for_selection": False,
+        },
+    )
+    assert selection["ambiguous"] is False
+    assert selection["measured_height_used_for_selection"] is False
+    assert selection["groups"]["ground_before"]["candidate_ids"] == [1, 2]
+    assert selection["groups"]["stage_top"]["candidate_ids"] == [3]
+    assert selection["groups"]["ground_after"]["candidate_ids"] == [4]
+
+
+def test_ambiguous_plateau_partition_does_not_force_stage_label():
+    candidates = [
+        candidate(1, 20.0, 21.0), candidate(2, 30.0, 31.0),
+        candidate(3, 33.0, 34.0), candidate(4, 36.0, 37.0),
+    ]
+    selection = GATE.classify_plateau_candidates(
+        candidates, 25.0, 35.0,
+        {
+            "method": "temporal_partition_around_ramp_window",
+            "measured_height_used_for_selection": False,
+        },
+    )
+    assert selection["ambiguous"] is True
+    assert all(item["selected_for_height"] is False for item in candidates)
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    result = GATE.height_validation([], config, candidates)
+    assert result["status"] == "HEIGHT_WARN"
+    assert result["estimated_stage_height_m"] is None
+    assert result["absolute_error_m"] is None
+
+
+def test_initial_height_screening_tolerance_is_applied_separately_from_raw_error():
+    before = synthetic_plane_points(seed=1)
+    after = synthetic_plane_points(seed=2)
+    stage = synthetic_plane_points(height=0.07, seed=3)
+    result = GATE.estimate_height_from_points(
+        before, stage, after,
+        {"available": True, "height_m": 0.15, "tolerance_m": 0.05},
+    )
+    assert result["estimated_stage_height_m"] == pytest.approx(0.07, abs=1.0e-8)
+    assert result["absolute_error_m"] == pytest.approx(0.08, abs=1.0e-8)
+    assert result["relative_error_percent"] == pytest.approx(100.0 * 0.08 / 0.15)
+    assert result["status"] == "HEIGHT_FAIL"
+
+
+def test_ground_before_after_inconsistency_produces_warning():
+    before = synthetic_plane_points(seed=1)
+    after = before.copy()
+    after[:, 2] += 0.12
+    stage = synthetic_plane_points(height=0.15, seed=3)
+    result = GATE.estimate_height_from_points(
+        before, stage, after,
+        {
+            "available": True, "height_m": 0.09, "tolerance_m": 0.20,
+            "before_after_consistency_tolerance_m": 0.05,
+            "ground_plane_slope_warning_threshold": 0.20,
+        },
+    )
+    assert result["before_after_consistency"]["status"] == "INCONSISTENT"
+    assert result["before_after_difference_m"] == pytest.approx(0.12, abs=1.0e-8)
+    assert result["status"] == "HEIGHT_WARN"
+
+
 def test_original_paths_are_configured_read_only_and_output_is_separate(tmp_path):
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     assert config["inputs"]["bag"] == "/home/a/Desktop/shihoon/Slam/slam_flat_rc_20260814_163346"
     assert config["inputs"]["localization_csv"].endswith(
         "results/planar_ekf_gicp_gate/independent_163346_0_50s/localization.csv"
     )
+    assert config["physical_stage_height"]["available"] is True
+    assert config["physical_stage_height"]["height_m"] == pytest.approx(0.150)
+    assert config["physical_stage_height"]["tolerance_m"] == pytest.approx(0.050)
+    assert "not_calibrated_accuracy" in config["physical_stage_height"]["tolerance_interpretation"]
+    assert config["inputs"]["preserved_result_directories"] == [
+        "/home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate"
+    ]
     protected = tmp_path / "production_result"
     protected.mkdir()
     source = protected / "localization.csv"

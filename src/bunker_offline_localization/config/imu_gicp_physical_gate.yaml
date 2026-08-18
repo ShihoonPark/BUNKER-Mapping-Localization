@@ -3,6 +3,8 @@ inputs:
   localization_csv: /home/a/Desktop/shihoon/bunker_localization_ws/results/planar_ekf_gicp_gate/independent_163346_0_50s/localization.csv
   map_ply: /home/a/Desktop/shihoon/glim_real/20260814_classroom/results/classroom_150626.ply
   glim_dump: /home/a/Desktop/shihoon/glim_real/20260814_classroom/results/dump_150626_direct_20260814_222719
+  preserved_result_directories:
+    - /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate
 
 time_window:
   origin_timestamp: 1786692827.2210245
@@ -59,11 +61,25 @@ gyro_gate:
   sign_deadband_radps: 0.01
 
 physical_stage_height:
-  available: false
-  height_m: 0.0
-  tolerance_m: 0.05
+  available: true
+  height_m: 0.150
+  tolerance_m: 0.050
+  measurement_method: manual_vertical_measurement
+  measurement_reference: classroom_carpet_surface_to_flat_stage_top_surface
+  tolerance_interpretation: initial_screening_threshold_not_calibrated_accuracy
+  before_after_consistency_tolerance_m: 0.050
+  ground_plane_slope_warning_threshold: 0.10
 
-# Optional bag-relative [start, end] windows. They must be manually reviewed before use.
+# Candidate detection happens first and has no access to physical_stage_height. The temporal
+# partition then uses only the predeclared 25-35 s ramp window. It is accepted only when there is
+# at least one candidate before/after and exactly one stable candidate inside the ramp window.
+plateau_selection:
+  method: temporal_partition_around_ramp_window
+  enabled: true
+  measured_height_used_for_selection: false
+
+# Optional bag-relative [start, end] windows override automatic temporal partitioning only after
+# manual review. They remain unset for this Gate.
 plateau_windows:
   ground_before: null
   stage_top: null

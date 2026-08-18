@@ -680,6 +680,11 @@ def estimate_height_from_points(ground_before, stage_top, ground_after, physical
     confidence = [None, None]
     if bootstrap:
         confidence = [float(np.percentile(bootstrap, 2.5)), float(np.percentile(bootstrap, 97.5))]
+    tolerance = float(physical["tolerance_m"])
+    consistency_tolerance = float(physical.get("before_after_consistency_tolerance_m", tolerance))
+    slope_warning_threshold = float(physical.get("ground_plane_slope_warning_threshold", 0.10))
+    before_after_difference = abs(before_height - after_height)
+    slope_magnitude = float(math.hypot(a, b))
     result = {
         "estimated_stage_height_m": estimated,
         "robust_spread_m": robust_spread,
@@ -688,31 +693,58 @@ def estimate_height_from_points(ground_before, stage_top, ground_after, physical
             "a_dz_dx": float(a),
             "b_dz_dy": float(b),
             "c_m": float(c),
-            "slope_magnitude": float(math.hypot(a, b)),
+            "slope_magnitude": slope_magnitude,
+            "slope_angle_deg": float(math.degrees(math.atan(slope_magnitude))),
             "robust_spread_m": float(plane["robust_spread_m"]),
+            "slope_warning_threshold": slope_warning_threshold,
+            "slope_warning": slope_magnitude > slope_warning_threshold,
         },
         "sample_count": {
             "ground_before": int(before.shape[0]),
             "stage_top": int(stage.shape[0]),
             "ground_after": int(after.shape[0]),
         },
+        "ground_before_estimate_m": before_height,
+        "ground_after_estimate_m": after_height,
         "before_reference_height_m": before_height,
         "after_reference_height_m": after_height,
-        "before_after_difference_m": abs(before_height - after_height),
+        "before_after_difference_m": before_after_difference,
+        "before_after_consistency": {
+            "difference_m": before_after_difference,
+            "tolerance_m": consistency_tolerance,
+            "consistent": before_after_difference <= consistency_tolerance,
+            "status": "CONSISTENT" if before_after_difference <= consistency_tolerance else "INCONSISTENT",
+        },
         "physical_stage_height_available": bool(physical["available"]),
         "physical_stage_height_m": float(physical["height_m"]) if physical["available"] else None,
-        "tolerance_m": float(physical["tolerance_m"]),
+        "measured_stage_height_m": float(physical["height_m"]) if physical["available"] else None,
+        "measurement_method": physical.get("measurement_method"),
+        "measurement_reference": physical.get("measurement_reference"),
+        "tolerance_m": tolerance,
+        "tolerance_interpretation": physical.get(
+            "tolerance_interpretation", "initial_screening_threshold_not_calibrated_accuracy"
+        ),
     }
     if not physical["available"]:
-        result.update({"status": "HEIGHT_PENDING", "absolute_error_m": None, "relative_error": None})
+        result.update({
+            "status": "HEIGHT_PENDING", "absolute_error_m": None,
+            "relative_error": None, "relative_error_percent": None,
+        })
     else:
         absolute_error = abs(estimated - float(physical["height_m"]))
         relative_error = absolute_error / abs(float(physical["height_m"])) if physical["height_m"] else None
-        tolerance = float(physical["tolerance_m"])
-        status = "HEIGHT_PASS" if absolute_error <= tolerance else (
-            "HEIGHT_WARN" if absolute_error <= 2.0 * tolerance else "HEIGHT_FAIL"
-        )
-        result.update({"status": status, "absolute_error_m": absolute_error, "relative_error": relative_error})
+        if absolute_error > tolerance:
+            status = "HEIGHT_FAIL"
+        elif before_after_difference > consistency_tolerance or slope_magnitude > slope_warning_threshold:
+            status = "HEIGHT_WARN"
+        else:
+            status = "HEIGHT_PASS"
+        result.update({
+            "status": status,
+            "absolute_error_m": absolute_error,
+            "relative_error": relative_error,
+            "relative_error_percent": 100.0 * relative_error if relative_error is not None else None,
+        })
     return result
 
 
@@ -792,43 +824,182 @@ def selected_window_points(records, window):
     ])
 
 
-def height_validation(records, config):
+def classify_plateau_candidates(candidates, ramp_start, ramp_end, selection_config):
+    """Partition pre-detected candidates without receiving or inspecting the measured height."""
+    if selection_config.get("measured_height_used_for_selection", False):
+        raise ValueError("Measured stage height must never participate in plateau selection")
+    groups = {"ground_before": [], "stage_top": [], "ground_after": []}
+    boundary_candidates = []
+    for candidate in candidates:
+        start = candidate["start_offset_sec"]
+        end = candidate["end_offset_sec"]
+        if end <= ramp_start:
+            group = "ground_before"
+        elif start >= ramp_start and end <= ramp_end:
+            group = "stage_top"
+        elif start >= ramp_end:
+            group = "ground_after"
+        else:
+            group = "ambiguous_boundary_overlap"
+            boundary_candidates.append(candidate["candidate_id"])
+        candidate["temporal_group"] = group
+        candidate["selected_for_height"] = False
+        if group in groups:
+            groups[group].append(candidate)
+    ambiguity_reasons = []
+    if boundary_candidates:
+        ambiguity_reasons.append(f"candidates overlap temporal boundaries: {boundary_candidates}")
+    if not groups["ground_before"]:
+        ambiguity_reasons.append("no stable candidate before the ramp window")
+    if len(groups["stage_top"]) != 1:
+        ambiguity_reasons.append(
+            f"expected exactly one stable candidate inside the ramp window, found {len(groups['stage_top'])}"
+        )
+    if not groups["ground_after"]:
+        ambiguity_reasons.append("no stable candidate after the ramp window")
+    ambiguous = bool(ambiguity_reasons)
+    if not ambiguous:
+        for group_candidates in groups.values():
+            for candidate in group_candidates:
+                candidate["selected_for_height"] = True
+    group_summary = {}
+    for name, group_candidates in groups.items():
+        group_summary[name] = {
+            "candidate_ids": [candidate["candidate_id"] for candidate in group_candidates],
+            "time_windows_sec": [
+                [candidate["start_offset_sec"], candidate["end_offset_sec"]]
+                for candidate in group_candidates
+            ],
+            "candidate_sample_counts": [candidate["sample_count"] for candidate in group_candidates],
+            "total_samples": int(sum(candidate["sample_count"] for candidate in group_candidates)),
+        }
+    return {
+        "method": selection_config["method"],
+        "surface_identity_basis": "predeclared_ground_to_ramp_to_ground_temporal_sequence",
+        "external_surface_label_confirmation": False,
+        "ramp_window_sec": [ramp_start, ramp_end],
+        "measured_height_used_for_selection": False,
+        "selection_completed_before_physical_comparison": True,
+        "ambiguous": ambiguous,
+        "ambiguity_reasons": ambiguity_reasons,
+        "groups": group_summary,
+    }
+
+
+def points_for_candidate_group(records, candidates, candidate_ids):
+    selected = []
+    candidate_ids = set(candidate_ids)
+    for candidate in candidates:
+        if candidate["candidate_id"] not in candidate_ids:
+            continue
+        points = selected_window_points(
+            records, [candidate["start_offset_sec"], candidate["end_offset_sec"]]
+        )
+        if points.size:
+            selected.append(points)
+    return np.vstack(selected) if selected else np.empty((0, 3))
+
+
+def incomplete_height_result(physical, status, reason, selection=None):
+    measured = float(physical["height_m"]) if physical["available"] else None
+    return {
+        "status": status,
+        "estimated_stage_height_m": None,
+        "measured_stage_height_m": measured,
+        "physical_stage_height_available": bool(physical["available"]),
+        "physical_stage_height_m": measured,
+        "absolute_error_m": None,
+        "relative_error": None,
+        "relative_error_percent": None,
+        "robust_spread_m": None,
+        "bootstrap_95pct_ci_m": [None, None],
+        "ground_before_estimate_m": None,
+        "ground_after_estimate_m": None,
+        "before_after_consistency": None,
+        "ground_plane": None,
+        "tolerance_m": float(physical["tolerance_m"]),
+        "tolerance_interpretation": physical.get(
+            "tolerance_interpretation", "initial_screening_threshold_not_calibrated_accuracy"
+        ),
+        "reason": reason,
+        "plateau_selection": selection,
+    }
+
+
+def height_validation(records, config, candidates=None):
     windows = config["plateau_windows"]
     required = ("ground_before", "stage_top", "ground_after")
-    if any(windows.get(name) is None for name in required):
-        return {
-            "status": "HEIGHT_PENDING",
-            "estimated_stage_height_m": None,
-            "physical_stage_height_available": bool(config["physical_stage_height"]["available"]),
-            "physical_stage_height_m": (
-                float(config["physical_stage_height"]["height_m"])
-                if config["physical_stage_height"]["available"] else None
-            ),
-            "manual_plateau_windows_complete": False,
-            "reason": "Manual ground_before, stage_top, and ground_after windows are not all configured.",
-            "fixed_offset_assumption": "A fixed LiDAR/base height offset cancels only between flat plateaus.",
-            "ramp_lever_arm_caveat": "Ramp roll/pitch can introduce lever-arm effects; ramp samples are not used for height fitting.",
+    physical = config["physical_stage_height"]
+    manual_complete = all(windows.get(name) is not None for name in required)
+    selection = None
+    if manual_complete:
+        points = {name: selected_window_points(records, windows[name]) for name in required}
+        selection = {
+            "method": "manually_reviewed_windows",
+            "measured_height_used_for_selection": False,
+            "selection_completed_before_physical_comparison": True,
+            "ambiguous": False,
+            "ambiguity_reasons": [],
+            "groups": {
+                name: {
+                    "candidate_ids": [], "time_windows_sec": [windows[name]],
+                    "candidate_sample_counts": [int(points[name].shape[0])],
+                    "total_samples": int(points[name].shape[0]),
+                }
+                for name in required
+            },
         }
-    points = {name: selected_window_points(records, windows[name]) for name in required}
+    elif config.get("plateau_selection", {}).get("enabled", False) and candidates is not None:
+        selection = classify_plateau_candidates(
+            candidates, config["time_window"]["ramp_start_sec"],
+            config["time_window"]["ramp_end_sec"], config["plateau_selection"],
+        )
+        if selection["ambiguous"]:
+            status = "HEIGHT_WARN" if physical["available"] else "HEIGHT_PENDING"
+            result = incomplete_height_result(
+                physical, status,
+                "Candidate identity is ambiguous; no height estimate or physical comparison was forced.",
+                selection,
+            )
+            result["manual_plateau_windows_complete"] = False
+            return result
+        points = {
+            name: points_for_candidate_group(
+                records, candidates, selection["groups"][name]["candidate_ids"]
+            )
+            for name in required
+        }
+    else:
+        status = "HEIGHT_WARN" if physical["available"] else "HEIGHT_PENDING"
+        result = incomplete_height_result(
+            physical, status,
+            "Manual windows are incomplete and automatic temporal selection is unavailable.",
+        )
+        result["manual_plateau_windows_complete"] = False
+        return result
     minimum = int(config["height_estimation"]["minimum_samples_per_window"])
     if any(points[name].shape[0] < minimum for name in required):
-        return {
-            "status": "HEIGHT_PENDING",
-            "estimated_stage_height_m": None,
-            "physical_stage_height_available": bool(config["physical_stage_height"]["available"]),
-            "manual_plateau_windows_complete": True,
-            "reason": f"At least {minimum} accepted samples are required in every manual window.",
-            "sample_count": {name: int(points[name].shape[0]) for name in required},
-        }
+        status = "HEIGHT_WARN" if physical["available"] else "HEIGHT_PENDING"
+        result = incomplete_height_result(
+            physical, status, f"At least {minimum} accepted samples are required in every plateau group.",
+            selection,
+        )
+        result["sample_count"] = {name: int(points[name].shape[0]) for name in required}
+        return result
     result = estimate_height_from_points(
         points["ground_before"], points["stage_top"], points["ground_after"],
-        config["physical_stage_height"], config["height_estimation"]["bootstrap_samples"],
+        physical, config["height_estimation"]["bootstrap_samples"],
         config["height_estimation"]["bootstrap_seed"],
     )
-    result["manual_plateau_windows_complete"] = True
-    result["manual_plateau_windows"] = windows
+    result["manual_plateau_windows_complete"] = manual_complete
+    result["manual_plateau_windows"] = windows if manual_complete else None
+    result["plateau_selection"] = selection
+    result["reason"] = (
+        "Physical comparison used a height-independent temporal partition of pre-detected candidates."
+        if not manual_complete else "Physical comparison used manually reviewed windows."
+    )
     result["fixed_offset_assumption"] = "A fixed LiDAR/base height offset cancels between flat plateaus."
-    result["ramp_lever_arm_caveat"] = "Only manually reviewed flat plateaus are fit because ramp attitude creates lever-arm effects."
+    result["ramp_lever_arm_caveat"] = "Only stable candidate samples are fit because ramp attitude creates lever-arm effects."
     return result
 
 
@@ -944,9 +1115,20 @@ def plot_height(output, records, candidates, height):
     positions = np.asarray([record["position"] for record in accepted])
     figure, axis = plt.subplots(figsize=(11, 4.5), constrained_layout=True)
     axis.plot(times, positions[:, 2], linewidth=1.2, label="accepted GICP z")
+    group_colors = {
+        "ground_before": "tab:blue", "stage_top": "tab:orange",
+        "ground_after": "tab:green", "ambiguous_boundary_overlap": "tab:red",
+    }
+    used_labels = set()
     for candidate in candidates:
-        axis.axvspan(candidate["start_offset_sec"], candidate["end_offset_sec"], color="tab:green", alpha=0.17)
-    axis.set(xlabel="bag-relative time [s]", ylabel="GICP z [m]", title="GICP z and unlabeled stable-plateau candidates")
+        group = candidate.get("temporal_group", "unclassified")
+        label = group if group not in used_labels else None
+        axis.axvspan(
+            candidate["start_offset_sec"], candidate["end_offset_sec"],
+            color=group_colors.get(group, "tab:gray"), alpha=0.17, label=label,
+        )
+        used_labels.add(group)
+    axis.set(xlabel="bag-relative time [s]", ylabel="GICP z [m]", title="GICP z and rate/duration plateau candidates")
     axis.set_xlim(20.0, 40.0)
     axis.grid(True, alpha=0.3)
     axis.legend()
@@ -960,12 +1142,29 @@ def plot_height(output, records, candidates, height):
             plane["a_dz_dx"] * positions[:, 0] + plane["b_dz_dy"] * positions[:, 1] + plane["c_m"]
         )
         axis.plot(times, residual, label="ground-plane residual")
+        if height.get("measured_stage_height_m") is not None:
+            axis.axhline(
+                height["measured_stage_height_m"], color="black", linestyle="--",
+                label="measured stage height",
+            )
+        selected_labels = set()
+        for candidate in candidates:
+            if not candidate.get("selected_for_height", False):
+                continue
+            selected = (times >= candidate["start_offset_sec"]) & (times <= candidate["end_offset_sec"])
+            group = candidate["temporal_group"]
+            axis.scatter(
+                times[selected], residual[selected], s=18, color=group_colors[group],
+                label=group if group not in selected_labels else None,
+            )
+            selected_labels.add(group)
         axis.set_ylabel("plane-corrected height [m]")
     else:
         axis.plot(times, positions[:, 2], label="raw accepted GICP z")
         axis.text(0.5, 0.9, "No manual plateau windows: ground-plane correction pending", transform=axis.transAxes, ha="center")
         axis.set_ylabel("GICP z [m]")
     axis.set(xlabel="bag-relative time [s]", title="Ground-plane-corrected stage height validation")
+    axis.set_xlim(20.0, 40.0)
     axis.grid(True, alpha=0.3)
     axis.legend()
     figure.savefig(output / "ground_plane_corrected_height.png", dpi=160)
@@ -1032,7 +1231,8 @@ def report_text(summary, axis_metrics, candidates, height):
     candidate_lines = "\n".join(
         f"- Candidate {row['candidate_id']}: {row['start_offset_sec']:.3f}-{row['end_offset_sec']:.3f} s, "
         f"duration {row['duration_sec']:.3f} s, n={row['sample_count']}, median z={row['median_z_m']:.4f} m, "
-        f"median pitch={row['median_pitch_deg']:.3f} deg, z MAD={row['z_mad_m']:.4f} m"
+        f"median pitch={row['median_pitch_deg']:.3f} deg, z MAD={row['z_mad_m']:.4f} m, "
+        f"temporal group=`{row.get('temporal_group', 'unclassified')}`"
         for row in candidates
     ) or "- No candidate met the configured stability and duration thresholds."
     axis_lines = []
@@ -1061,10 +1261,30 @@ def report_text(summary, axis_metrics, candidates, height):
             f"{row['best_absolute_imu_axis']} | {row['expected_pearson']:.4f} | {sign} |"
         )
     height_estimate = (
-        "not estimated: manual plateau windows are not configured"
+        "not estimated because plateau identity is ambiguous"
         if height.get("estimated_stage_height_m") is None
         else f"{height['estimated_stage_height_m']:.6f} m"
     )
+    selection = height.get("plateau_selection") or {}
+    selection_groups = selection.get("groups", {})
+    selection_lines = []
+    for name in ("ground_before", "stage_top", "ground_after"):
+        group = selection_groups.get(name, {})
+        windows = group.get("time_windows_sec", [])
+        selection_lines.append(
+            f"| {name} | {group.get('candidate_ids', [])} | {group.get('candidate_sample_counts', [])} | "
+            f"{windows} | {group.get('total_samples', 0)} |"
+        )
+    measured = height.get("measured_stage_height_m")
+    absolute_error = height.get("absolute_error_m")
+    relative_error_percent = height.get("relative_error_percent")
+    robust_spread = height.get("robust_spread_m")
+    confidence = height.get("bootstrap_95pct_ci_m")
+    before_estimate = height.get("ground_before_estimate_m")
+    after_estimate = height.get("ground_after_estimate_m")
+    consistency = height.get("before_after_consistency") or {}
+    plane = height.get("ground_plane") or {}
+    optional = lambda value, digits=6: "not available" if value is None else f"{value:.{digits}f}"
     return f"""# IMU–GICP physical consistency Gate
 
 ## Decision
@@ -1128,19 +1348,52 @@ only; no timestamp offset is applied to production data.
 
 {candidate_lines}
 
-These candidates are unlabeled. Automatic detection does not declare any interval to be ground
-or stage top.
+Candidate creation uses only smoothed absolute z rate, absolute pitch rate, duration, accepted-pose
+continuity, and timestamp-gap limits. The measured 0.150 m is not passed to detection or temporal
+partitioning. After detection, candidates are partitioned solely by their time relation to the
+predeclared 25-35 s ramp window.
+
+| temporal group | candidate IDs | per-candidate samples | time windows [s] | total samples |
+|---|---|---|---|---:|
+{chr(10).join(selection_lines)}
+
+- Selection method: `{selection.get('method')}`
+- Selection ambiguous: {selection.get('ambiguous')}
+- Selection ambiguity reasons: {selection.get('ambiguity_reasons')}
+- Measured height used for selection: {selection.get('measured_height_used_for_selection')}
+- Surface-identity basis: `{selection.get('surface_identity_basis')}`; external label confirmation: {selection.get('external_surface_label_confirmation')}
 
 ## Height validation
 
 - Status: **{height['status']}**
+- Measured stage height: {optional(measured)} m
+- Measurement: `{height.get('measurement_method')}`; reference: `{height.get('measurement_reference')}`
 - Estimated stage height: {height_estimate}
+- Raw absolute error: {optional(absolute_error)} m
+- Raw relative error: {optional(relative_error_percent, 3)} %
+- Stage residual robust spread: {optional(robust_spread)} m
+- Bootstrap 95% confidence interval: {confidence} m
+- Ground-before-referenced estimate: {optional(before_estimate)} m
+- Ground-after-referenced estimate: {optional(after_estimate)} m
+- Before/after consistency: {consistency.get('status')} (difference {optional(consistency.get('difference_m'))} m; initial limit {optional(consistency.get('tolerance_m'))} m)
+- Ground plane `z = a*x + b*y + c`: a={optional(plane.get('a_dz_dx'))}, b={optional(plane.get('b_dz_dy'))}, c={optional(plane.get('c_m'))} m
+- Ground-plane slope: {optional(plane.get('slope_magnitude'))} m/m ({optional(plane.get('slope_angle_deg'), 3)} deg); warning={plane.get('slope_warning')}
 - Physical stage height available: {height['physical_stage_height_available']}
+- Screening tolerance: {height['tolerance_m']:.3f} m
+- Tolerance interpretation: `{height['tolerance_interpretation']}`
+- Raw 25-35 s z max-min: {height['raw_ramp_z_range_m']:.6f} m; used as height estimate: {height['raw_ramp_z_range_used_for_estimate']}
 - Reason: {height.get('reason', 'Manual windows were evaluated.')}
 
 A fixed LiDAR/base vertical offset cancels in relative flat-plateau height. Ramp attitude can
 create a lever-arm effect, so ramp samples are not treated as plateau height evidence. The raw
-z range is never used as a stage-height estimate.
+z range is never used as a stage-height estimate. The 0.050 m tolerance is an initial physical
+consistency screening threshold chosen with the 0.20 m map/scan voxel resolution and manual
+measurement in mind; it is not a calibrated localization-accuracy threshold. Raw errors are
+reported independently of that threshold.
+
+The reported ground-plane slope warning is an observation from the selected GICP poses. Map tilt
+and localization-z inconsistency are possible explanations, but this Gate does not distinguish
+between them.
 
 ## Interpretation (not directly observed)
 
@@ -1159,7 +1412,11 @@ def run(config_path, output_directory):
         config = yaml.safe_load(stream)
     inputs = config["inputs"]
     output = Path(output_directory).resolve()
-    readonly_paths = [inputs["bag"], Path(inputs["localization_csv"]).parent, inputs["map_ply"], inputs["glim_dump"]]
+    readonly_paths = [
+        inputs["bag"], Path(inputs["localization_csv"]).parent,
+        inputs["map_ply"], inputs["glim_dump"],
+        *inputs.get("preserved_result_directories", []),
+    ]
     validate_output_path(output, readonly_paths)
     before = {
         "bag": fingerprint(inputs["bag"]),
@@ -1167,6 +1424,8 @@ def run(config_path, output_directory):
         "map_ply": fingerprint(inputs["map_ply"]),
         "glim_dump": fingerprint(inputs["glim_dump"]),
     }
+    for index, path in enumerate(inputs.get("preserved_result_directories", [])):
+        before[f"preserved_result_{index}"] = fingerprint(path)
     output.mkdir(parents=True, exist_ok=True)
     window = config["time_window"]
     records = read_localization_csv(
@@ -1192,7 +1451,13 @@ def run(config_path, output_directory):
         window["ramp_start_sec"], window["ramp_end_sec"], config["imu_interval"]["max_sample_gap_sec"],
     )
     candidates = detect_plateaus(records, config["plateau_detection"], config["pairing"]["max_pair_dt_sec"])
-    height = height_validation(records, config)
+    height = height_validation(records, config, candidates)
+    ramp_z = np.asarray([
+        record["position"][2] for record in records
+        if record["accepted"] and window["ramp_start_sec"] <= record["offset"] <= window["ramp_end_sec"]
+    ])
+    height["raw_ramp_z_range_m"] = float(np.ptp(ramp_z))
+    height["raw_ramp_z_range_used_for_estimate"] = False
     gyro_status, gyro_diagnostics = gate_decision(
         axis_metrics, correlation_rows, lag_summary, orientation_summary, config["gyro_gate"]
     )
@@ -1212,6 +1477,8 @@ def run(config_path, output_directory):
         "map_ply": fingerprint(inputs["map_ply"]),
         "glim_dump": fingerprint(inputs["glim_dump"]),
     }
+    for index, path in enumerate(inputs.get("preserved_result_directories", [])):
+        after[f"preserved_result_{index}"] = fingerprint(path)
     integrity = {"unchanged": before == after, "before": before, "after": after}
     if not integrity["unchanged"]:
         raise RuntimeError("A protected input changed during read-only analysis")
@@ -1269,7 +1536,8 @@ def run(config_path, output_directory):
     write_csv(
         output / "candidate_plateaus.csv", candidates,
         ["candidate_id", "start_offset_sec", "end_offset_sec", "duration_sec", "sample_count",
-         "median_x_m", "median_y_m", "median_z_m", "median_pitch_rad", "median_pitch_deg", "z_mad_m"],
+         "median_x_m", "median_y_m", "median_z_m", "median_pitch_rad", "median_pitch_deg", "z_mad_m",
+         "temporal_group", "selected_for_height"],
     )
     write_csv(output / "imu_gicp_pairs.csv", [
         {

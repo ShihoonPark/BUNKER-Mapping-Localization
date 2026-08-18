@@ -2,7 +2,7 @@
 set -eo pipefail
 
 workspace="/home/a/Desktop/shihoon/bunker_localization_ws"
-output="${1:-${workspace}/results/imu_gicp_physical_gate}"
+output="${1:-${workspace}/results/imu_gicp_physical_gate_stage_150mm}"
 config="${2:-${workspace}/src/bunker_offline_localization/config/imu_gicp_physical_gate.yaml}"
 
 if [[ "${output}" == "${workspace}/results/planar_ekf_gicp_gate"* ]]; then

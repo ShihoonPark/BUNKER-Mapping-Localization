@@ -109,8 +109,10 @@ Every source scan is independently filtered, voxelized, assigned covariances, an
 
 This is a post-processing validation Gate, not another localization mode. It reads the preserved
 production CSV and the independent bag's `/imu/data` and `/odom` topics, and writes only to
-`results/imu_gicp_physical_gate/`. Input size/mtime fingerprints plus the production CSV SHA-256
-are compared before and after every real-data run.
+`results/imu_gicp_physical_gate_stage_150mm/`. The earlier no-height result under
+`results/imu_gicp_physical_gate/` is a protected input and cannot be selected as the new output.
+Input size/mtime fingerprints plus the production CSV SHA-256 are compared before and after every
+real-data run.
 
 For adjacent CSV rows whose two endpoints are accepted and whose interval is at most 0.15 s, the
 body/LiDAR-frame registration angular velocity is:
@@ -132,12 +134,19 @@ all three bias-corrected gyro axes with SO(3) exponential updates. This is a rel
 not an absolute IMU orientation observation. Identity IMU orientations and accelerometer double
 integration are deliberately unused.
 
-Stable-plateau detection searches 20-40 s with rolling-median z/pitch rates and emits unlabeled
-candidates only. A stage height is estimated only after all three manual windows (`ground_before`,
-`stage_top`, `ground_after`) are configured. The two ground windows fit robust
+Stable-plateau detection searches 20-40 s with rolling-median z/pitch rates and emits candidates
+before reading the measured height. A second, height-blind temporal rule partitions candidates
+before 25 s as ground-before, the unique stable candidate inside the predeclared 25-35 s ramp
+window as stage-top, and candidates after 35 s as ground-after. A missing group, a boundary
+overlap, or multiple in-ramp candidates is treated as ambiguous and no height is forced. Manually
+reviewed windows can override this rule without using the physical height for selection.
+
+The two ground groups fit robust
 `z = a*x + b*y + c`; stage height is the median plane residual with robust spread and bootstrap
-confidence interval. Physical-height PASS/FAIL is enabled only when a physical height is also
-provided. The initial checked-in configuration therefore returns `HEIGHT_PENDING`.
+confidence interval. The measured carpet-to-flat-stage vertical height is 0.150 m. Its 0.050 m
+tolerance is explicitly an initial physical-consistency screening threshold chosen with the
+0.20 m map/scan voxel resolution and manual measurement in mind, not a calibrated localization
+accuracy threshold. Raw absolute and relative errors are reported independently of the threshold.
 
 ## Independent-drive initialization and time window
 
@@ -220,12 +229,14 @@ colcon test --packages-select bunker_offline_localization --event-handlers conso
 colcon test-result --verbose
 ```
 
-All prior test targets behind the earlier 36-result colcon summary remain. One new pytest target
-contains fourteen cases covering stable SO(3) logarithms near zero, 90 degrees, and pi; body-frame
+All prior test targets behind the earlier 36-result colcon summary remain. The physical-Gate pytest
+target now contains eighteen cases covering stable SO(3) logarithms near zero, 90 degrees, and pi; body-frame
 relative direction; constant-rate gyro integration; robust median bias; timestamp-weighted interval
 averaging; rejected/gap exclusion; axis/sign correlation; synthetic lag recovery; robust
 ground-plane fitting; known synthetic stage height; unavailable physical-height PENDING behavior;
-and protected input/output separation. The direct new target reports 14/14 passed; the full ROS
+height-blind temporal partitioning, ambiguous-candidate refusal, raw screening errors,
+before/after inconsistency warnings, and protected input/output separation. The direct target
+reports 18/18 passed; the full ROS
 result summary reports 38 tests, 0 errors, 0 failures, and 0 skipped (the colcon total includes its
 CTest aggregate records). Together the suite covers transform direction/signs/inversion,
 quaternion normalization, TUM parsing,
@@ -306,13 +317,13 @@ ros2 run bunker_offline_localization run_planar_ekf_gate.sh /home/a/Desktop/shih
 Run the read-only IMU–GICP physical-consistency Gate against that preserved production result:
 
 ```bash
-ros2 run bunker_offline_localization run_imu_gicp_physical_gate.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/imu_gicp_physical_gate.yaml
+ros2 run bunker_offline_localization run_imu_gicp_physical_gate.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate_stage_150mm /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/imu_gicp_physical_gate.yaml
 ```
 
 Regenerate it directly without changing or rerunning localization:
 
 ```bash
-ros2 run bunker_offline_localization generate_imu_gicp_physical_gate.py --config /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/imu_gicp_physical_gate.yaml --output-directory /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate
+ros2 run bunker_offline_localization generate_imu_gicp_physical_gate.py --config /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/imu_gicp_physical_gate.yaml --output-directory /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate_stage_150mm
 ```
 
 The comparison launch accepts `filter_type:=ekf|ukf` and
@@ -486,8 +497,8 @@ No small_gicp parameter, voxel size, quality gate, covariance, seed, or retry po
 
 ## IMU–GICP physical consistency Gate results
 
-Generated separately under `results/imu_gicp_physical_gate/`; the production CSV, prior reports,
-map, bag, and GLIM dump remain unchanged.
+Generated separately under `results/imu_gicp_physical_gate_stage_150mm/`; the production CSV,
+earlier no-height Gate, prior reports, map, bag, and GLIM dump remain unchanged.
 
 - Input: all 490 localization rows, 6,919 IMU messages, and 2,417 odometry messages within 0-50 s
 - IMU orientation: 6,919/6,919 identity messages; none used
@@ -503,15 +514,26 @@ map, bag, and GLIM dump remain unchanged.
   the expected sign; weak roll correlation and low-motion sign agreement remain explicit warnings
 - Ramp relative-orientation error mean/p95/max: `1.6508 / 4.3329 / 6.0415` deg; final error
   `0.2883` deg
-- Seven unlabeled stable candidates were detected between 20 and 40 s. Their median z values are
-  `-0.2122, -0.1676, -0.0781, 0.1335, 0.2016, 0.2690, 0.2819` m; they are not automatically
-  classified as ground or stage top
-- Estimated stage height: unavailable until manually reviewed plateau windows are configured
-- Physical height comparison: unavailable because `physical_stage_height.available=false`
-- Decision: `GYRO_WARN`, `HEIGHT_PENDING`, `OVERALL_WARN_WITH_PENDING_HEIGHT`
+- Seven stable candidates were detected without the measured height. The height-blind temporal
+  partition selected candidate IDs 1-3 as ground-before (29 samples), ID 4 as stage-top (7
+  samples), and IDs 5-7 as ground-after (24 samples). Exact windows and individual sample counts
+  are retained in `candidate_plateaus.csv` and `height_validation.json`
+- Measured stage height: `0.150000 m`
+- Estimated stage height: `-0.051391 m`; robust spread `0.008931 m`; bootstrap 95% CI
+  `[-0.071607, -0.026933] m`
+- Raw absolute/relative error: `0.201391 m / 134.261%`
+- Ground-before/after referenced estimates: `-0.049596 / -0.051474 m`; difference `0.001878 m`,
+  therefore consistent under the initial 0.050 m before/after limit
+- Robust ground plane: `a=0.093054`, `b=0.110163`, `c=-0.563177 m`; slope `0.144205 m/m`
+  (`8.206 deg`), which raises a separate map-tilt/localization-z warning
+- Raw 25-35 s z max-min is `0.373789 m` and is explicitly not used as stage height
+- Height screening tolerance: `0.050 m`, initial screening only and not calibrated accuracy
+- Decision: `GYRO_WARN`, `HEIGHT_FAIL`, `OVERALL_FAIL`
 
 `GYRO_WARN` is not a parameter-tuning failure: pitch and yaw are strongly consistent, but the
 x/roll signal does not meet the checked-in initial correlation threshold and low-motion x/y sign
 agreement does not meet its initial threshold. The report keeps observed metrics separate from
-possible causes. See `results/imu_gicp_physical_gate/physical_validation_report.md` and the eight
-separate diagnostic plots for the full evidence.
+possible causes. `HEIGHT_FAIL` is the raw measured-versus-estimated result under the predeclared
+height-blind temporal partition; it is not an absolute localization-accuracy claim. See
+`results/imu_gicp_physical_gate_stage_150mm/physical_validation_report.md` and the eight separate
+diagnostic plots for the full evidence.
