@@ -1,0 +1,75 @@
+inputs:
+  bag: /home/a/Desktop/shihoon/Slam/slam_flat_rc_20260814_163346
+  localization_csv: /home/a/Desktop/shihoon/bunker_localization_ws/results/planar_ekf_gicp_gate/independent_163346_0_50s/localization.csv
+  map_ply: /home/a/Desktop/shihoon/glim_real/20260814_classroom/results/classroom_150626.ply
+  glim_dump: /home/a/Desktop/shihoon/glim_real/20260814_classroom/results/dump_150626_direct_20260814_222719
+
+time_window:
+  origin_timestamp: 1786692827.2210245
+  start_sec: 0.0
+  end_sec: 50.0
+  ramp_start_sec: 25.0
+  ramp_end_sec: 35.0
+
+extrinsic:
+  # p_lidar = T_lidar_imu * p_imu. Rotation is the only part used for gyro comparison.
+  translation_xyz: [0.0, 0.0, -0.07]
+  rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+pairing:
+  max_pair_dt_sec: 0.15
+
+gyro_bias:
+  candidate_start_sec: 1.0
+  candidate_end_sec: 8.0
+  max_odom_linear_speed_mps: 0.05
+  max_odom_angular_speed_radps: 0.05
+  max_gyro_norm_radps: 0.08
+  max_odom_association_dt_sec: 0.05
+
+imu_interval:
+  max_sample_gap_sec: 0.02
+  max_boundary_gap_sec: 0.012
+
+lag_search:
+  minimum_sec: -0.30
+  maximum_sec: 0.30
+  step_sec: 0.01
+
+plateau_detection:
+  search_start_sec: 20.0
+  search_end_sec: 40.0
+  smoothing_window_samples: 5
+  max_abs_z_rate_mps: 0.08
+  max_abs_pitch_rate_radps: 0.12
+  minimum_duration_sec: 0.50
+  minimum_samples: 5
+
+# These are deliberately initial engineering thresholds, not calibrated sensor specifications.
+gyro_gate:
+  minimum_usable_pairs_full: 400
+  minimum_usable_pairs_ramp: 75
+  minimum_expected_axis_pearson: 0.45
+  minimum_expected_axis_sign_agreement: 0.58
+  minimum_axis_excitation_std_radps: 0.015
+  minimum_ramp_pitch_pearson: 0.55
+  maximum_reasonable_best_lag_sec: 0.20
+  maximum_orientation_error_p95_deg: 12.0
+  maximum_orientation_error_fail_deg: 30.0
+  sign_deadband_radps: 0.01
+
+physical_stage_height:
+  available: false
+  height_m: 0.0
+  tolerance_m: 0.05
+
+# Optional bag-relative [start, end] windows. They must be manually reviewed before use.
+plateau_windows:
+  ground_before: null
+  stage_top: null
+  ground_after: null
+
+height_estimation:
+  minimum_samples_per_window: 5
+  bootstrap_samples: 500
+  bootstrap_seed: 163346

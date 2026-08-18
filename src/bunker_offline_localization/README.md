@@ -64,6 +64,8 @@ outside the Gate and are neither fused nor registered.
 - ROS 2 Humble and `robot_localization/ekf_node` from `/opt/ros/humble`
 - Ubuntu/ROS-compatible PCL 1.12 for binary PLY loading
 - Eigen3 and OpenMP
+- Python 3 with NumPy, PyYAML, Matplotlib, `rosbag2_py`, and ROS message Python bindings for the
+  read-only physical-consistency report
 - Official `small_gicp` Git submodule at `third_party/small_gicp`
 - Upstream: `https://github.com/koide3/small_gicp.git`
 - Pinned upstream commit: `aea131352e0d362d3e579a334c477cfafa5ee5eb` (`small_gicp` 1.0.1)
@@ -102,6 +104,40 @@ filter axes are simply not consumed by the localizer.
 
 The target map is loaded, voxelized, assigned covariances, and indexed with a KD-tree exactly once.
 Every source scan is independently filtered, voxelized, assigned covariances, and registered.
+
+## IMU–GICP physical consistency Gate
+
+This is a post-processing validation Gate, not another localization mode. It reads the preserved
+production CSV and the independent bag's `/imu/data` and `/odom` topics, and writes only to
+`results/imu_gicp_physical_gate/`. Input size/mtime fingerprints plus the production CSV SHA-256
+are compared before and after every real-data run.
+
+For adjacent CSV rows whose two endpoints are accepted and whose interval is at most 0.15 s, the
+body/LiDAR-frame registration angular velocity is:
+
+```text
+delta_R = transpose(R_map_lidar(k)) * R_map_lidar(k+1)
+omega_gicp_lidar = Log(delta_R) / dt
+```
+
+The SO(3) logarithm has explicit small-angle and near-pi branches. A rejected row breaks the
+pair sequence; neither GICP pairing nor lag interpolation crosses that break. IMU gyro is selected
+only in bag-relative 0-50 s. Its robust median bias uses the reviewed 1-8 s candidate interval plus
+odom linear speed, odom angular speed, gyro norm, and odom-association thresholds. Each GICP
+interval receives a timestamp-weighted gyro average. The known identity LiDAR-IMU rotation keeps
+the x/y/z comparison unchanged; no automatic axis/sign or clock correction is applied.
+
+The ramp orientation comparison anchors the first accepted 25-35 s GICP orientation and integrates
+all three bias-corrected gyro axes with SO(3) exponential updates. This is a relative common anchor,
+not an absolute IMU orientation observation. Identity IMU orientations and accelerometer double
+integration are deliberately unused.
+
+Stable-plateau detection searches 20-40 s with rolling-median z/pitch rates and emits unlabeled
+candidates only. A stage height is estimated only after all three manual windows (`ground_before`,
+`stage_top`, `ground_after`) are configured. The two ground windows fit robust
+`z = a*x + b*y + c`; stage height is the median plane residual with robust spread and bootstrap
+confidence interval. Physical-height PASS/FAIL is enabled only when a physical height is also
+provided. The initial checked-in configuration therefore returns `HEIGHT_PENDING`.
 
 ## Independent-drive initialization and time window
 
@@ -184,7 +220,15 @@ colcon test --packages-select bunker_offline_localization --event-handlers conso
 colcon test-result --verbose
 ```
 
-The 36 tests cover transform direction/signs/inversion, quaternion normalization, TUM parsing,
+All prior test targets behind the earlier 36-result colcon summary remain. One new pytest target
+contains fourteen cases covering stable SO(3) logarithms near zero, 90 degrees, and pi; body-frame
+relative direction; constant-rate gyro integration; robust median bias; timestamp-weighted interval
+averaging; rejected/gap exclusion; axis/sign correlation; synthetic lag recovery; robust
+ground-plane fitting; known synthetic stage height; unavailable physical-height PENDING behavior;
+and protected input/output separation. The direct new target reports 14/14 passed; the full ROS
+result summary reports 38 tests, 0 errors, 0 failures, and 0 skipped (the colcon total includes its
+CTest aggregate records). Together the suite covers transform direction/signs/inversion,
+quaternion normalization, TUM parsing,
 timestamp tolerance, invalid registration rejection, inclusive/disabled/invalid time windows,
 a known-transform synthetic point cloud registered with official small_gicp, both comparison
 launch/config paths, shared sensor fields, disabled IMU orientation, prediction-to-GICP delta
@@ -257,6 +301,18 @@ does not replace the archived A/B results:
 
 ```bash
 ros2 run bunker_offline_localization run_planar_ekf_gate.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/planar_ekf_gicp_gate
+```
+
+Run the read-only IMU–GICP physical-consistency Gate against that preserved production result:
+
+```bash
+ros2 run bunker_offline_localization run_imu_gicp_physical_gate.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/imu_gicp_physical_gate.yaml
+```
+
+Regenerate it directly without changing or rerunning localization:
+
+```bash
+ros2 run bunker_offline_localization generate_imu_gicp_physical_gate.py --config /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/imu_gicp_physical_gate.yaml --output-directory /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate
 ```
 
 The comparison launch accepts `filter_type:=ekf|ukf` and
@@ -427,3 +483,35 @@ prediction and the full-6DoF GICP corrections. The combined report is
 The Gate allows at most two additional independent rejects (0.408 percentage point) relative to
 the prior 487/490 result; the measured result lost one scan. Same-bag acceptance improved by two.
 No small_gicp parameter, voxel size, quality gate, covariance, seed, or retry policy was changed.
+
+## IMU–GICP physical consistency Gate results
+
+Generated separately under `results/imu_gicp_physical_gate/`; the production CSV, prior reports,
+map, bag, and GLIM dump remain unchanged.
+
+- Input: all 490 localization rows, 6,919 IMU messages, and 2,417 odometry messages within 0-50 s
+- IMU orientation: 6,919/6,919 identity messages; none used
+- Robust stationary gyro median bias x/y/z: `0 / 0 / 0` rad/s from 990 selected samples; the
+  corresponding means are `-6.347e-5 / +1.922e-4 / +6.170e-5` rad/s
+- GICP pairs: 481 valid adjacent accepted pairs; 8 pairs excluded by rejected endpoints, no large
+  gap pair, and 480 pairs retained after IMU interval coverage
+- Full zero-lag Pearson x/y/z: `0.1947 / 0.7627 / 0.9712`
+- Full best lag x/y/z: `-0.04 / -0.06 / -0.04` s, with Pearson
+  `0.2306 / 0.8865 / 0.9895`; these offsets are diagnostic only
+- Ramp zero-lag Pearson x/y/z: `0.2523 / 0.8248 / 0.9742`; pitch sign agreement is `0.7527`
+- All three expected x/y/z mappings are their strongest absolute-correlation mapping and all have
+  the expected sign; weak roll correlation and low-motion sign agreement remain explicit warnings
+- Ramp relative-orientation error mean/p95/max: `1.6508 / 4.3329 / 6.0415` deg; final error
+  `0.2883` deg
+- Seven unlabeled stable candidates were detected between 20 and 40 s. Their median z values are
+  `-0.2122, -0.1676, -0.0781, 0.1335, 0.2016, 0.2690, 0.2819` m; they are not automatically
+  classified as ground or stage top
+- Estimated stage height: unavailable until manually reviewed plateau windows are configured
+- Physical height comparison: unavailable because `physical_stage_height.available=false`
+- Decision: `GYRO_WARN`, `HEIGHT_PENDING`, `OVERALL_WARN_WITH_PENDING_HEIGHT`
+
+`GYRO_WARN` is not a parameter-tuning failure: pitch and yaw are strongly consistent, but the
+x/roll signal does not meet the checked-in initial correlation threshold and low-motion x/y sign
+agreement does not meet its initial threshold. The report keeps observed metrics separate from
+possible causes. See `results/imu_gicp_physical_gate/physical_validation_report.md` and the eight
+separate diagnostic plots for the full evidence.
