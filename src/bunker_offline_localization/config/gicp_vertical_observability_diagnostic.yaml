@@ -1,0 +1,52 @@
+inputs:
+  bag: /home/a/Desktop/shihoon/Slam/slam_flat_rc_20260814_163346
+  map_ply: /home/a/Desktop/shihoon/glim_real/20260814_classroom/results/classroom_150626.ply
+  mapping_trajectory: /home/a/Desktop/shihoon/glim_real/20260814_classroom/results/dump_150626_direct_20260814_222719/traj_lidar.txt
+  localization_csv: /home/a/Desktop/shihoon/bunker_localization_ws/results/planar_ekf_gicp_gate/independent_163346_0_50s/localization.csv
+  physical_gate_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate_stage_150mm
+  plateau_diagnostic_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_plateau_label_diagnostic
+  surface_pose_z_diagnostic_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_surface_pose_z_diagnostic
+  ply_geometry_diagnostic_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/ply_support_surface_geometry_diagnostic
+  small_gicp_directory: /home/a/Desktop/shihoon/bunker_localization_ws/third_party/small_gicp
+  production_source_file: /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/src/registration.cpp
+  production_metrics_file: /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/src/metrics.cpp
+  production_localizer_file: /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/src/offline_localizer_node.cpp
+  production_config_files:
+    - /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/localization.yaml
+    - /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/independent_163346.yaml
+    - /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/ekf.yaml
+
+output_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/gicp_vertical_observability_diagnostic
+
+time_window:
+  origin_timestamp: 1786692827.2210245
+  start_sec: 0.0
+  end_sec: 50.0
+
+predeclared_groups:
+  baseline: [1, 2, 3, 4, 5]
+  transition: [6]
+  anomaly: [7, 8, 9, 10, 11]
+  recovery_stage: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+
+mapping_association:
+  method: dynamic_programming_monotonic_ordered_xy_only
+  maximum_xy_distance_m: 0.60
+
+hessian_analysis:
+  source_parameter_order: [rx, ry, rz, tx, ty, tz]
+  source_local_tz_index: 5
+  symmetrize_for_analysis: true
+  eigenvalue_relative_tolerance: 1.0e-10
+  eigenvalue_absolute_tolerance: 1.0e-9
+  pseudo_inverse_rcond: 1.0e-10
+  coupling_denominator_tolerance: 1.0e-12
+  symmetry_relative_warning_threshold: 1.0e-10
+  anchor_z_invariant_tolerance_m: 1.0e-9
+  vertical_fraction_translation_norm_tolerance_m: 1.0e-12
+
+anomaly_timeline:
+  first_candidate_id: 5
+  last_candidate_id: 12
+
+expected_small_gicp_commit: aea131352e0d362d3e579a334c477cfafa5ee5eb

@@ -656,3 +656,34 @@ ros2 run bunker_offline_localization run_ply_support_surface_diagnostic.sh /home
 Outputs are isolated under `results/ply_support_surface_geometry_diagnostic/`. Limitations include
 the sparse multi-surface PLY, unknown `T_base_lidar`, unavailable ground-after plateau, and the fact
 that observed spatial correlations do not identify GLIM's internal causal mechanism.
+
+## Independent GICP vertical-observability diagnostic
+
+The independent trajectory shows a predeclared ID 7 vertical anomaly relative to the canonical
+mapping route. This read-only Gate separates the prediction-z accepted-anchor mechanism from the
+new per-scan GICP correction and asks whether the accepted local solution has unusually weak
+vertical curvature. It does not equate successful map matching with globally correct vertical
+association, and it performs no replay, threshold change, registration tuning, or measured-height
+selection.
+
+The stored small_gicp matrix is audited from the pinned source as the summed, weighted GICP
+`J^T M J` matrix. Its tangent order is `[rx, ry, rz, tx, ty, tz]`, and the optimizer applies a
+right-multiplicative update, so translation entries are LiDAR-local. The primary map-z diagnostic
+therefore rotates only the translation tangent into map axes before computing the raw map-z entry,
+Schur-complement effective z information, eigenspectrum, coupling, and pseudo-inverse curvature
+proxy. The inverse is not a calibrated covariance: residual noise scale is not calibrated, units
+mix radians and meters, and the Hessian describes only one accepted local basin.
+
+Production prediction z holds the previous accepted full-6DoF GICP z. The diagnostic checks this
+invariant scan by scan and shows how a newly accepted correction is carried into later initial
+guesses. A locally healthy Hessian cannot exclude wrong correspondences, another local minimum, or
+a multimodal cost landscape, so selected timestamps are exported for a later correspondence/RViz
+Gate; no visualization publisher is added here.
+
+```bash
+ros2 run bunker_offline_localization run_gicp_vertical_observability_diagnostic.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/gicp_vertical_observability_diagnostic
+```
+
+Outputs are isolated under `results/gicp_vertical_observability_diagnostic/` and include the
+source-level Hessian convention audit, all accepted scan/candidate/group metrics, XY-only ordered
+mapping association, nine diagnostic figures, input fingerprints, and RViz handoff metadata.

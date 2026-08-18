@@ -72,6 +72,7 @@ install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
   scripts/generate_filter_comparison.py
+  scripts/generate_gicp_vertical_observability_diagnostic.py
   scripts/generate_imu_gicp_physical_gate.py
   scripts/generate_independent_report.py
   scripts/generate_plateau_label_diagnostic.py
@@ -80,6 +81,7 @@ install(PROGRAMS
   scripts/generate_report.py
   scripts/generate_surface_pose_z_diagnostic.py
   scripts/run_filter_comparison.sh
+  scripts/run_gicp_vertical_observability_diagnostic.sh
   scripts/run_imu_gicp_physical_gate.sh
   scripts/run_independent_163346.sh
   scripts/run_offline_smoke_test.sh
@@ -156,6 +158,14 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE} -m pytest -q
       ${CMAKE_CURRENT_SOURCE_DIR}/test/ply_support_surface_diagnostic_test.py
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
+
+  ament_add_test(
+    gicp_vertical_observability_diagnostic_test
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/gicp_vertical_observability_diagnostic_test.py
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    APPEND_ENV "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/scripts"
     ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
 endif()
 
