@@ -617,3 +617,42 @@ Outputs are isolated under `results/imu_gicp_surface_pose_z_diagnostic/`. The fi
 LiDAR sensor-center pose-z spatial support plane, not segmented physical floor geometry. It cannot
 establish exact map-floor tilt, absolute localization accuracy, `T_base_lidar`, lever-arm
 correction, or ground-after height.
+
+## PLY local support-surface geometry diagnostic
+
+The pose-z plane diagnostic above describes LiDAR sensor-center trajectories, so it cannot by
+itself separate reconstructed map geometry from mapping-run pose behavior or independent
+localization behavior. This read-only Gate performs that separation without replaying localization
+or modifying the 13,058-point PLY. It estimates deterministic 20-neighbor PCA normals on the
+original vertices, rejects wall-like normals, creates locally continuous components using fixed XY,
+z-discontinuity, and normal-angle links, and fits a local Huber-IRLS plane only to a component that
+geometrically supports each frozen candidate XY.
+
+The primary XY radius is fixed at 0.60 m. The 0.45 and 0.75 m runs are sensitivity reports only.
+Component selection has no pose-z or measured-height input; equal spatial support from multiple
+horizontal layers returns `AMBIGUOUS_SURFACE`. The component-link values reflect the sparse PLY
+sampling and local support continuity and are not tuned to 0.150 m. Candidate labels remain IDs
+1-11 `ground_before`, IDs 12-22 `stage_top`, and unavailable `ground_after`.
+
+Canonical `traj_lidar.txt` poses are associated to candidate route order with dynamic-programming
+monotonic XY matching. Association never uses z, quaternion, cross-bag timestamps, or the measured
+height. For each successfully extracted local surface, the diagnostic reports
+`mapping_clearance = mapping_lidar_z - ply_surface_z` and
+`independent_clearance = independent_lidar_z - ply_surface_z`. Their absolute expected values are
+unknown because the physical `T_base_lidar` remains unavailable. The first-ramp view retains raw
+support-like PLY `s-z` scatter instead of forcing a single curve through sparse or multi-surface
+geometry.
+
+Phase A writes and SHA256-seals `blind_ply_surface_geometry_summary.json` before opening the
+physical-height config. Phase B then compares only the predeclared topology sets (lower IDs 10-11,
+upper IDs 12-13) with the manual 0.150 m height. The unchanged 0.050 m tolerance is an initial
+screening threshold, not calibrated accuracy, and its result is not a production-localization
+failure.
+
+```bash
+ros2 run bunker_offline_localization run_ply_support_surface_diagnostic.sh /home/a/Desktop/shihoon/bunker_localization_ws/results/ply_support_surface_geometry_diagnostic /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/ply_support_surface_geometry_diagnostic.yaml
+```
+
+Outputs are isolated under `results/ply_support_surface_geometry_diagnostic/`. Limitations include
+the sparse multi-surface PLY, unknown `T_base_lidar`, unavailable ground-after plateau, and the fact
+that observed spatial correlations do not identify GLIM's internal causal mechanism.

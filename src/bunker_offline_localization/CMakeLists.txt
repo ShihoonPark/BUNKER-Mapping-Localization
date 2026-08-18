@@ -76,6 +76,7 @@ install(PROGRAMS
   scripts/generate_independent_report.py
   scripts/generate_plateau_label_diagnostic.py
   scripts/generate_planar_ekf_gate_report.py
+  scripts/generate_ply_support_surface_diagnostic.py
   scripts/generate_report.py
   scripts/generate_surface_pose_z_diagnostic.py
   scripts/run_filter_comparison.sh
@@ -84,6 +85,7 @@ install(PROGRAMS
   scripts/run_offline_smoke_test.sh
   scripts/run_plateau_label_diagnostic.sh
   scripts/run_planar_ekf_gate.sh
+  scripts/run_ply_support_surface_diagnostic.sh
   scripts/run_surface_pose_z_diagnostic.sh
   DESTINATION lib/${PROJECT_NAME})
 
@@ -146,6 +148,13 @@ if(BUILD_TESTING)
     surface_pose_z_diagnostic_test
     COMMAND ${Python3_EXECUTABLE} -m pytest -q
       ${CMAKE_CURRENT_SOURCE_DIR}/test/surface_pose_z_diagnostic_test.py
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
+
+  ament_add_test(
+    ply_support_surface_diagnostic_test
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/ply_support_surface_diagnostic_test.py
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
     ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
 endif()
