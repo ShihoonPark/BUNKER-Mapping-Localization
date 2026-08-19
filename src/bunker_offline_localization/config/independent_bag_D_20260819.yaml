@@ -1,0 +1,22 @@
+covariance_adapter:
+  ros__parameters:
+    time_window:
+      enabled: true
+      # rosbag metadata starting_time.nanoseconds = 1787142248321576145
+      # rosbag metadata duration.nanoseconds = 219251211092
+      origin_timestamp: 1787142248.3215761
+      start_offset_sec: 0.0
+      end_offset_sec: 50.0
+
+offline_localizer:
+  ros__parameters:
+    results_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/bag_D_flat_20260819_localization_0_50s
+    # The launch file loads T_map_lidar from the independently generated coarse-initializer JSON.
+    # No Bag C/D odometry anchor or legacy 163346 staging-pose seed is used.
+    initialization:
+      mode: parameter
+    time_window:
+      enabled: true
+      origin_timestamp: 1787142248.3215761
+      start_offset_sec: 0.0
+      end_offset_sec: 50.0

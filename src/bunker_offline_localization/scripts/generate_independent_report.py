@@ -68,6 +68,15 @@ def quaternion_step_angles(quaternions):
     return 2.0 * np.arccos(np.clip(dots, 0.0, 1.0))
 
 
+def quaternion_roll_pitch_yaw(quaternions):
+    quaternions = np.asarray(quaternions, dtype=float)
+    x, y, z, w = quaternions.T
+    roll = np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+    pitch = np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0))
+    yaw = np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    return np.column_stack((roll, pitch, yaw))
+
+
 def write_location_csv(path, rows, origin_timestamp):
     fieldnames = [
         "timestamp",
@@ -214,6 +223,7 @@ def evaluate(args):
     translation_steps = np.linalg.norm(pose_delta, axis=1)
     rotation_steps = quaternion_step_angles(trajectory_quaternions)
     yaws = np.unwrap(quaternion_yaw(trajectory_quaternions))
+    trajectory_rpy = quaternion_roll_pitch_yaw(trajectory_quaternions)
     yaw_steps = np.diff(yaws)
     speeds = translation_steps / dt
     yaw_rates = yaw_steps / dt
@@ -232,6 +242,24 @@ def evaluate(args):
     step_offsets = trajectory_times[1:] - args.window_origin_timestamp
     largest_translation_index = int(np.argmax(translation_steps)) if translation_steps.size else 0
     largest_rotation_index = int(np.argmax(rotation_steps)) if rotation_steps.size else 0
+    correction_translation = np.asarray(
+        [float(row["correction_translation_m"]) for row in rows]
+    )
+    correction_roll = np.asarray([float(row["correction_roll_rad"]) for row in rows])
+    correction_pitch = np.asarray([float(row["correction_pitch_rad"]) for row in rows])
+    correction_yaw = np.asarray([float(row["correction_yaw_rad"]) for row in rows])
+    predicted_positions = np.asarray([row_vector(row, "pred") for row in rows])
+    predicted_yaw = np.asarray([float(row["pred_yaw"]) for row in rows])
+    predicted_translation_steps = np.linalg.norm(
+        np.diff(predicted_positions[:, :2], axis=0), axis=1
+    )
+    predicted_yaw_steps = np.abs(
+        np.arctan2(np.sin(np.diff(predicted_yaw)), np.cos(np.diff(predicted_yaw)))
+    )
+    predicted_step_offsets = offsets[1:]
+    catastrophic_translation_threshold_m = 1.0
+    catastrophic_rotation_threshold_rad = np.deg2rad(30.0)
+    contiguous_accepted_steps = dt <= 0.25
 
     with (output_directory / "pose_jumps.csv").open(
         "w", newline="", encoding="utf-8"
@@ -269,7 +297,7 @@ def evaluate(args):
         with run_summary_path.open(encoding="utf-8") as stream:
             run_metadata = json.load(stream)
     summary = {
-        "evaluation_name": "independent 163346 map/localization validation",
+        "evaluation_name": args.evaluation_name,
         "absolute_accuracy_available": False,
         "absolute_rmse_reported": False,
         "reference_trajectory": None,
@@ -296,6 +324,26 @@ def evaluate(args):
         "gicp_final_error": distribution(final_errors[attempted]),
         "gicp_final_error_per_inlier": distribution(error_per_inlier[attempted]),
         "runtime_ms": distribution(runtimes[attempted]),
+        "prediction_to_gicp_correction": {
+            "translation_m": distribution(correction_translation),
+            "absolute_roll_rad": distribution(np.abs(correction_roll)),
+            "absolute_pitch_rad": distribution(np.abs(correction_pitch)),
+            "absolute_yaw_rad": distribution(np.abs(correction_yaw)),
+        },
+        "prediction_discontinuity": {
+            "xy_step_m": distribution(predicted_translation_steps),
+            "yaw_step_deg": distribution(np.degrees(predicted_yaw_steps)),
+            "largest_xy_step_offset_sec": (
+                float(predicted_step_offsets[int(np.argmax(predicted_translation_steps))])
+                if predicted_translation_steps.size
+                else None
+            ),
+            "largest_yaw_step_offset_sec": (
+                float(predicted_step_offsets[int(np.argmax(predicted_yaw_steps))])
+                if predicted_yaw_steps.size
+                else None
+            ),
+        },
         "pose_jump": {
             "translation_step_m": distribution(translation_steps),
             "rotation_step_rad": distribution(rotation_steps),
@@ -316,6 +364,49 @@ def evaluate(args):
             "translational_acceleration_mps2": distribution(accelerations),
             "absolute_yaw_acceleration_radps2": distribution(yaw_accelerations),
         },
+        "z_roll_pitch_behavior": {
+            "z_m": distribution(trajectory_positions[:, 2]),
+            "roll_rad": distribution(trajectory_rpy[:, 0]),
+            "pitch_rad": distribution(trajectory_rpy[:, 1]),
+            "roll_deg": distribution(np.degrees(trajectory_rpy[:, 0])),
+            "pitch_deg": distribution(np.degrees(trajectory_rpy[:, 1])),
+            "maximum_consecutive_z_step_m": (
+                float(np.max(np.abs(np.diff(trajectory_positions[:, 2]))))
+                if trajectory_positions.shape[0] > 1
+                else None
+            ),
+            "maximum_consecutive_roll_step_deg": (
+                float(np.max(np.abs(np.degrees(np.diff(np.unwrap(trajectory_rpy[:, 0]))))))
+                if trajectory_rpy.shape[0] > 1
+                else None
+            ),
+            "maximum_consecutive_pitch_step_deg": (
+                float(np.max(np.abs(np.degrees(np.diff(np.unwrap(trajectory_rpy[:, 1]))))))
+                if trajectory_rpy.shape[0] > 1
+                else None
+            ),
+        },
+        "catastrophic_jump_screen": {
+            "translation_threshold_m": catastrophic_translation_threshold_m,
+            "rotation_threshold_deg": 30.0,
+            "maximum_contiguous_dt_sec": 0.25,
+            "contiguous_steps_screened": int(np.count_nonzero(contiguous_accepted_steps)),
+            "steps_across_rejection_gaps_excluded": int(
+                np.count_nonzero(~contiguous_accepted_steps)
+            ),
+            "translation_jump_count": int(
+                np.count_nonzero(
+                    (translation_steps > catastrophic_translation_threshold_m)
+                    & contiguous_accepted_steps
+                )
+            ),
+            "rotation_jump_count": int(
+                np.count_nonzero(
+                    (rotation_steps > catastrophic_rotation_threshold_rad)
+                    & contiguous_accepted_steps
+                )
+            ),
+        },
         "run_metadata": run_metadata,
     }
     with (output_directory / "summary.json").open("w", encoding="utf-8") as stream:
@@ -324,7 +415,7 @@ def evaluate(args):
 
     save_plot(
         output_directory / "acceptance_timeline.png",
-        "Independent 163346 accepted/rejected scans (0-50 s)",
+        f"{args.run_label} accepted/rejected scans",
         "bag-relative time [s]",
         "accepted (1) / rejected (0)",
         lambda axis: axis.scatter(
@@ -336,21 +427,21 @@ def evaluate(args):
     )
     save_plot(
         output_directory / "num_inliers.png",
-        "Independent-run GICP inliers",
+        f"{args.run_label} GICP inliers",
         "bag-relative time [s]",
         "number of inliers",
         lambda axis: axis.plot(offsets, inliers),
     )
     save_plot(
         output_directory / "gicp_final_error.png",
-        "Independent-run GICP final error",
+        f"{args.run_label} GICP final error",
         "bag-relative time [s]",
         "raw final error",
         lambda axis: axis.plot(offsets, final_errors),
     )
     save_plot(
         output_directory / "runtime_ms.png",
-        "Independent-run registration runtime",
+        f"{args.run_label} registration runtime",
         "bag-relative time [s]",
         "runtime [ms]",
         lambda axis: axis.plot(offsets, runtimes),
@@ -380,8 +471,23 @@ def evaluate(args):
     axes[2].set_xlabel("bag-relative time [s]")
     for axis in axes:
         axis.grid(True, alpha=0.3)
-    figure.suptitle("Independent accepted-trajectory smoothness")
+    figure.suptitle(f"{args.run_label} accepted-trajectory smoothness")
     figure.savefig(output_directory / "trajectory_smoothness.png", dpi=160)
+    plt.close(figure)
+
+    figure, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True, constrained_layout=True)
+    accepted_offsets = trajectory_times - args.window_origin_timestamp
+    axes[0].plot(accepted_offsets, trajectory_positions[:, 2])
+    axes[0].set_ylabel("T_map_lidar z [m]")
+    axes[1].plot(accepted_offsets, np.degrees(trajectory_rpy[:, 0]))
+    axes[1].set_ylabel("roll [deg]")
+    axes[2].plot(accepted_offsets, np.degrees(trajectory_rpy[:, 1]))
+    axes[2].set_ylabel("pitch [deg]")
+    axes[2].set_xlabel("bag-relative time [s]")
+    for axis in axes:
+        axis.grid(True, alpha=0.3)
+    figure.suptitle(f"{args.run_label} accepted z/roll/pitch")
+    figure.savefig(output_directory / "z_roll_pitch.png", dpi=160)
     plt.close(figure)
 
     map_points = read_binary_ply_xyz(args.map_ply)
@@ -400,7 +506,7 @@ def evaluate(args):
     )
     save_plot(
         output_directory / "map_trajectory_overlay.png",
-        "150626 PLY map with independent 163346 localization",
+        f"{args.map_label} with {args.run_label} localization",
         "x [m]",
         "y [m]",
         lambda axis: (
@@ -425,13 +531,18 @@ def evaluate(args):
     )
 
     runtime = summary["runtime_ms"]
+    error_per_inlier = summary["gicp_final_error_per_inlier"]
     jumps = summary["pose_jump"]
     smoothness = summary["trajectory_smoothness"]
-    report = f"""# Independent 163346 localization validation
+    vertical = summary["z_roll_pitch_behavior"]
+    correction = summary["prediction_to_gicp_correction"]
+    prediction_discontinuity = summary["prediction_discontinuity"]
+    catastrophic = summary["catastrophic_jump_screen"]
+    report = f"""# {args.report_title}
 
-This run aligns scans from the separate `163346` drive to the PLY map generated by `150626`.
+{args.context_description}
 Only the inclusive bag-relative interval {args.window_start_sec:.1f}-{args.window_end_sec:.1f} s
-was processed. No scan after the end bound or after the later sensor gap is part of this report.
+was processed.
 
 ## Outcome
 
@@ -440,28 +551,34 @@ was processed. No scan after the end bound or after the later sensor gap is part
 - Converged: {summary['converged_scans']} ({100.0 * summary['convergence_rate']:.3f}%)
 - Inliers mean / p95 / min: {summary['num_inliers']['mean']:.1f} / {summary['num_inliers']['p95']:.1f} / {summary['num_inliers']['min']:.0f}
 - Final error mean / p95 / max: {summary['gicp_final_error']['mean']:.3f} / {summary['gicp_final_error']['p95']:.3f} / {summary['gicp_final_error']['max']:.3f}
+- Final error/inlier mean / p95 / max: {error_per_inlier['mean']:.6f} / {error_per_inlier['p95']:.6f} / {error_per_inlier['max']:.6f}
 - Runtime mean / p95 / max: {runtime['mean']:.3f} / {runtime['p95']:.3f} / {runtime['max']:.3f} ms
 - Translation step p95 / max: {jumps['translation_step_m']['p95']:.4f} / {jumps['translation_step_m']['max']:.4f} m
 - Rotation step p95 / max: {jumps['rotation_step_deg']['p95']:.3f} / {jumps['rotation_step_deg']['max']:.3f} deg
 - Accepted path length: {smoothness['path_length_m']:.3f} m
 - Rejection reasons: {summary['rejection_reasons']}
+- Correction translation mean / p95 / max: {correction['translation_m']['mean']:.4f} / {correction['translation_m']['p95']:.4f} / {correction['translation_m']['max']:.4f} m
+- Prediction XY step max: {prediction_discontinuity['xy_step_m']['max']:.4f} m at {prediction_discontinuity['largest_xy_step_offset_sec']:.3f} s
+- Prediction yaw step max: {prediction_discontinuity['yaw_step_deg']['max']:.3f} deg at {prediction_discontinuity['largest_yaw_step_offset_sec']:.3f} s
+- Accepted z min / max: {vertical['z_m']['min']:.4f} / {vertical['z_m']['max']:.4f} m
+- Accepted roll min / max: {vertical['roll_deg']['min']:.3f} / {vertical['roll_deg']['max']:.3f} deg
+- Accepted pitch min / max: {vertical['pitch_deg']['min']:.3f} / {vertical['pitch_deg']['max']:.3f} deg
+- Catastrophic jump screen on contiguous accepted steps (dt <=0.25 s, >1 m or >30 deg): {catastrophic['translation_jump_count']} translation / {catastrophic['rotation_jump_count']} rotation
+- Accepted steps across rejection gaps excluded from that screen: {catastrophic['steps_across_rejection_gaps_excluded']}
 
 ## Interpretation boundaries
 
-- This is independent map/localization validation because map and scans come from different
-  drives. It is stronger than the same-bag pipeline consistency smoke test for detecting map or
-  localization coupling.
-- There is no GLIM reference trajectory for `163346`; therefore no absolute position, yaw, or
+- This is independent map/localization validation because map and scans come from different drives.
+- There is no GLIM reference trajectory for this independent drive; therefore no absolute position, yaw, or
   trajectory RMSE is claimed or computed.
-- The first 150626 map-frame pose is used only as an initial registration seed under the Phase 1
-  same-staging-pose assumption. This is not global relocalization and the seed is not ground truth.
+- {args.initialization_description}
 - The actual `base_link->velodyne` extrinsic is still unavailable, so the explicit identity
   prediction approximation remains. The evaluated output is `T_map_lidar`.
 - Inspect `map_trajectory_overlay.png`, `accepted_locations.csv`, and `rejected_locations.csv`
   together with the numeric jump/smoothness metrics; without an independent reference, they are
   consistency and plausibility evidence rather than absolute accuracy proof.
 """
-    (output_directory / "independent_report.md").write_text(report, encoding="utf-8")
+    (output_directory / args.report_filename).write_text(report, encoding="utf-8")
 
 
 def main():
@@ -474,6 +591,30 @@ def main():
     parser.add_argument("--window-start-sec", type=float, default=0.0)
     parser.add_argument("--window-end-sec", type=float, default=50.0)
     parser.add_argument("--expected-scans", type=int, default=490)
+    parser.add_argument(
+        "--evaluation-name", default="independent 163346 map/localization validation"
+    )
+    parser.add_argument("--run-label", default="Independent 163346")
+    parser.add_argument("--map-label", default="150626 PLY map")
+    parser.add_argument(
+        "--report-title", default="Independent 163346 localization validation"
+    )
+    parser.add_argument(
+        "--context-description",
+        default=(
+            "This run aligns scans from the separate `163346` drive to the PLY map "
+            "generated by `150626`."
+        ),
+    )
+    parser.add_argument(
+        "--initialization-description",
+        default=(
+            "The first 150626 map-frame pose is used only as an initial registration seed "
+            "under the Phase 1 same-staging-pose assumption. This is not global "
+            "relocalization and the seed is not ground truth."
+        ),
+    )
+    parser.add_argument("--report-filename", default="independent_report.md")
     args = parser.parse_args()
     if args.window_start_sec < 0.0 or args.window_end_sec < args.window_start_sec:
         parser.error("invalid time window")

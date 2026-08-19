@@ -782,3 +782,52 @@ required topics and frame IDs were received by the headless integration verifier
 `22.903/35.493/37.359/39.040 ms`; it is not the primary Gate and does not include RViz GUI
 rendering. Outputs are isolated under
 `results/gicp_correspondence_rviz_diagnostic/`.
+
+## Bag C map / independent Bag D coarse relocalization Gate
+
+This Gate does not reuse the legacy `independent_163346.yaml` staging-pose seed and does not use
+the disagreeing Bag C/D odometry anchors as a map-frame pose. A separate C++ initializer loads the
+Bag C PLY once and uses the first usable, dense Bag D scan. It derives x/y/z search bounds from the
+PLY bounding box, evaluates the full yaw range on a coarse voxel representation, retains ranked
+candidates, and refines distinct top candidates with the existing official small_gicp C++ GICP
+wrapper in full 6DoF. Selection is by the final ranked score; the first converged candidate is never
+accepted automatically. The resulting transform remains `T_map_lidar` with
+`p_map = T_map_lidar * p_lidar`.
+
+Generate the independent coarse seed:
+
+```bash
+cd /home/a/Desktop/shihoon/bunker_localization_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch bunker_offline_localization bag_d_coarse_initializer.launch.py
+```
+
+Bag D metadata was read directly as origin `1787142248.321576145` s
+(`1787142248321576145` ns) and duration `219.251211092` s; the short Gate below uses the
+inclusive metadata-relative interval 0–50 s.
+
+Run the baseline 0–50 s Bag D localization Gate at 1x:
+
+```bash
+cd /home/a/Desktop/shihoon/bunker_localization_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch bunker_offline_localization bag_d_localization.launch.py mode:=short
+```
+
+Generate the short-run consistency report without inventing absolute RMSE:
+
+```bash
+cd /home/a/Desktop/shihoon/bunker_localization_ws && PYTHONPATH=src/bunker_offline_localization/scripts:$PYTHONPATH python3 src/bunker_offline_localization/scripts/generate_independent_report.py --localization-csv results/bag_D_flat_20260819_localization_0_50s/localization.csv --estimated-trajectory results/bag_D_flat_20260819_localization_0_50s/estimated_traj_lidar.tum --map-ply /home/a/Desktop/shihoon/glim_real/20260819_flat/results/flat_bag_C_imu_on.ply --output-directory results/bag_D_flat_20260819_localization_0_50s --window-origin-timestamp 1787142248.3215761 --window-start-sec 0.0 --window-end-sec 50.0 --expected-scans 491 --evaluation-name 'Bag D 20260819 to Bag C map short independent localization' --run-label 'Bag D 20260819' --map-label 'Bag C IMU-on PLY map' --report-title 'Bag D to Bag C map localization — 0–50 s Gate' --context-description 'This run aligns independent Bag D scans to the PLY map generated from Mapping Bag C; the recordings use different start poses and routes.' --initialization-description 'The initial T_map_lidar comes from the separate map-bounding-box coarse search plus ranked full-6DoF small_gicp refinement. It is an initialization result, not ground truth.' --report-filename bag_d_short_localization_report.md
+```
+
+The measured coarse seed was `[3.774303, 6.897196, 0.133879] m` with roll/pitch/yaw
+`[-1.228, 3.136, -173.849] deg`, 2536 inliers, final error/inlier `0.121601`, and a
+distinct-second score ratio of `1.2766`. The 0–50 s baseline processed all 491 in-window scans:
+317 accepted and 174 rejected (`64.562%`). A discontinuous prediction step at 9.213 s was
+`4.679 m / 96.204 deg`, followed by a 141-scan rejection run; this is evidence against treating
+GICP hyperparameter relaxation as the next fix. Consequently the short stability Gate is `WARN`
+and full Bag D was intentionally not promoted or executed. `mode:=full` is implemented for the
+next Gate after the prediction discontinuity is resolved.
+
+The actual `T_base_lidar` and `T_base_imu` remain unknown. The same visible Phase 1 identity
+base-to-LiDAR and LiDAR-to-IMU z=-0.07 approximations are retained only for comparison with earlier
+experiments and are not claimed as physical calibration. Outputs are isolated under
+`results/bag_D_flat_20260819_coarse_init/` and
+`results/bag_D_flat_20260819_localization_0_50s/`; all source bags, GLIM dumps, PLY maps, and
+canonical 150626/163346 artifacts remain read-only.

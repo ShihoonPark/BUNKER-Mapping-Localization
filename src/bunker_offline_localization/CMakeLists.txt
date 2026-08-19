@@ -32,6 +32,7 @@ target_link_libraries(small_gicp_vendor INTERFACE Eigen3::Eigen OpenMP::OpenMP_C
 
 add_library(${PROJECT_NAME}_core
   src/accepted_pose_predictor.cpp
+  src/coarse_global_initializer.cpp
   src/diagnostic_utils.cpp
   src/gicp_diagnostics.cpp
   src/map_loader.cpp
@@ -56,6 +57,11 @@ target_include_directories(covariance_adapter_node PRIVATE ${CMAKE_CURRENT_SOURC
 target_compile_options(covariance_adapter_node PRIVATE -Wall -Wextra -Wpedantic)
 ament_target_dependencies(covariance_adapter_node nav_msgs rclcpp sensor_msgs)
 
+add_executable(coarse_global_initializer_node src/coarse_global_initializer_node.cpp)
+target_compile_options(coarse_global_initializer_node PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(coarse_global_initializer_node ${PROJECT_NAME}_core)
+ament_target_dependencies(coarse_global_initializer_node rclcpp sensor_msgs)
+
 add_executable(offline_localizer_node src/offline_localizer_node.cpp)
 target_compile_options(offline_localizer_node PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(offline_localizer_node ${PROJECT_NAME}_core)
@@ -67,6 +73,7 @@ ament_target_dependencies(filter_timing_monitor_node geometry_msgs nav_msgs rclc
 
 install(TARGETS
   ${PROJECT_NAME}_core
+  coarse_global_initializer_node
   covariance_adapter_node
   filter_timing_monitor_node
   offline_localizer_node
@@ -119,6 +126,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(registration_smoke_test test/registration_smoke_test.cpp)
   target_link_libraries(registration_smoke_test ${PROJECT_NAME}_core)
+
+  ament_add_gtest(coarse_global_initializer_test test/coarse_global_initializer_test.cpp)
+  target_link_libraries(coarse_global_initializer_test ${PROJECT_NAME}_core)
 
   ament_add_gtest(time_window_test test/time_window_test.cpp)
   target_link_libraries(time_window_test ${PROJECT_NAME}_core)
@@ -184,6 +194,14 @@ if(BUILD_TESTING)
     gicp_correspondence_rviz_diagnostic_test
     COMMAND ${Python3_EXECUTABLE} -m pytest -q
       ${CMAKE_CURRENT_SOURCE_DIR}/test/gicp_correspondence_rviz_diagnostic_test.py
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    APPEND_ENV "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/scripts"
+    ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
+
+  ament_add_test(
+    bag_d_relocalization_test
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/bag_d_relocalization_test.py
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
     APPEND_ENV "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/scripts"
     ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
