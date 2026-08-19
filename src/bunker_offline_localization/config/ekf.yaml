@@ -30,7 +30,10 @@ ekf_filter_node:
                    false, false, false]
     odom0_queue_size: 200
     odom0_differential: false
-    odom0_relative: false
+    # The localizer consumes only EKF relative motion. Zero the first odom pose so an arbitrary
+    # recorder/robot odom origin cannot enter the filter later as a delayed absolute-pose jump
+    # when IMU happens to initialize the filter before odometry.
+    odom0_relative: true
     odom0_pose_rejection_threshold: 5.0
     odom0_twist_rejection_threshold: 5.0
 

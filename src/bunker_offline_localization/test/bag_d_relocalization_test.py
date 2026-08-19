@@ -33,6 +33,20 @@ def test_bag_d_config_uses_metadata_window_without_legacy_staging_seed():
     assert "rotation_xyzw" not in localizer["initialization"]
 
 
+def test_production_ekf_zeroes_arbitrary_odom_origin_without_relaxing_gates():
+    ekf = yaml.safe_load((PACKAGE / "config/ekf.yaml").read_text(encoding="utf-8"))[
+        "ekf_filter_node"
+    ]["ros__parameters"]
+    comparison = yaml.safe_load(
+        (PACKAGE / "config/filter_common.yaml").read_text(encoding="utf-8")
+    )["localization_filter_node"]["ros__parameters"]
+    for parameters in (ekf, comparison):
+        assert parameters["odom0_relative"] is True
+        assert parameters["odom0_differential"] is False
+        assert parameters["odom0_pose_rejection_threshold"] == 5.0
+        assert parameters["odom0_twist_rejection_threshold"] == 5.0
+
+
 def test_bag_d_launch_loads_ranked_seed_and_preserves_short_full_policy(tmp_path):
     launch = load_module(
         PACKAGE / "launch/bag_d_localization.launch.py", "bag_d_launch"

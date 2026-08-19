@@ -39,6 +39,32 @@ TEST(AcceptedPosePredictor, ExtractsOnlyPlanarEkfRelativeMotion)
   EXPECT_NEAR(motion.dyaw, 0.25, 1.0e-12);
 }
 
+TEST(AcceptedPosePredictor, ArbitraryAbsoluteOdomOriginDoesNotEnterMapPrediction)
+{
+  const Eigen::Isometry3d odom_anchor = poseFromRpy(
+    2.918501, 3.664468, 0.0, 0.0, 0.0, -1.686447);
+  const Eigen::Isometry3d odom_current =
+    odom_anchor * poseFromRpy(0.12, -0.03, 0.0, 0.0, 0.0, 0.04);
+  const bol::PlanarRelativeMotion motion = bol::ekfPlanarRelativeMotion(
+    odom_anchor, odom_current);
+  const Eigen::Isometry3d map_anchor = poseFromRpy(
+    3.774303, 6.897196, 0.133879, -0.021431, 0.054739, -3.034238);
+  const Eigen::Isometry3d predicted = bol::predictMapLidarFromAcceptedPose(
+    map_anchor, motion);
+
+  EXPECT_NEAR(motion.dx, 0.12, 1.0e-12);
+  EXPECT_NEAR(motion.dy, -0.03, 1.0e-12);
+  EXPECT_NEAR(motion.dyaw, 0.04, 1.0e-12);
+  EXPECT_NEAR(
+    (predicted.translation() - map_anchor.translation()).head<2>().norm(),
+    std::hypot(0.12, -0.03), 1.0e-12);
+  EXPECT_NEAR(
+    bol::wrapAngle(
+      bol::rollPitchYaw(predicted.linear())[2] -
+      bol::rollPitchYaw(map_anchor.linear())[2]),
+    0.04, 1.0e-12);
+}
+
 TEST(AcceptedPosePredictor, EkfZRollPitchCannotAffectPlanarRelativeMotion)
 {
   const Eigen::Isometry3d anchor_a = poseFromRpy(1.0, 2.0, 0.0, 0.0, 0.0, -0.3);

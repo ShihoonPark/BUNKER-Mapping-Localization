@@ -27,7 +27,9 @@ localization_filter_node:
                    false, false, false]
     odom0_queue_size: 200
     odom0_differential: false
-    odom0_relative: false
+    # Match the production relative-motion policy: the arbitrary absolute odom origin is not a
+    # map-frame observation and must not depend on whether odom or IMU initializes the filter.
+    odom0_relative: true
     odom0_pose_rejection_threshold: 5.0
     odom0_twist_rejection_threshold: 5.0
 

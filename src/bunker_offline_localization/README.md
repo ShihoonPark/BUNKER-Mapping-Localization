@@ -831,3 +831,21 @@ experiments and are not claimed as physical calibration. Outputs are isolated un
 `results/bag_D_flat_20260819_coarse_init/` and
 `results/bag_D_flat_20260819_localization_0_50s/`; all source bags, GLIM dumps, PLY maps, and
 canonical 150626/163346 artifacts remain read-only.
+
+### Bag D EKF startup discontinuity correction
+
+The baseline A→E layer capture found the first nonphysical jump in
+`/localization/odometry/filtered`, not in raw/adapted odometry or GICP. Bag D records IMU before
+the first odometry message, so the filter initially remained near zero while the nonzero absolute
+odom pose was rejected; it was admitted later as a `4.593 m / 94.693 deg` EKF jump. Since EKF is
+used only as a relative-motion source, `odom0_relative` is now explicitly `true`. This removes the
+arbitrary odom origin and input-arrival-order dependency without changing covariance, rejection,
+GICP, or localization quality-gate parameters. Pre-fix diagnostics and post-fix comparisons are
+isolated under `results/bag_D_prediction_discontinuity_diagnostic/`.
+
+With the same coarse seed and unchanged registration settings, the 0–50 s Bag D rerun changed
+from `317/491` to `490/491` accepted. Maximum prediction step changed from
+`4.679 m / 96.204 deg` to `0.064 m / 9.072 deg`, and the longest rejection run changed from
+141 scans to one. The existing independent 163346 planar-EKF 0–50 s regression remained within
+its defined Gate at `485/490` accepted (minimum 485). The post-fix short Gate is `PASS`; full Bag D
+is recommended as the next Gate but was not executed as part of this diagnosis-only task.
