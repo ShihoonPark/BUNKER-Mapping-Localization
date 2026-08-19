@@ -875,3 +875,36 @@ Gate is `PASS` for map-relative long-duration continuity. This is not an absolut
 Bag D has no independent reference trajectory and the Bag C map has known vertical deformation.
 The report and plots are isolated under
 `results/bag_D_flat_20260819_localization_full/`.
+
+### Bag D full localization RViz replay
+
+The dedicated visualization launch keeps the legacy 163346 diagnostic launch unchanged. It loads
+the Bag D `best_candidate.T_map_lidar` from the saved coarse-initialization JSON using the same
+validation and parameter keys as `bag_d_localization.launch.py`, disables the time window, and
+layers the existing diagnostic publishers onto the same Bag D config, production EKF, Bag C map,
+registration settings, quality gates, and Phase 1 static transforms.
+
+Run the production-comparable 1x replay:
+
+```bash
+cd /home/a/Desktop/shihoon/bunker_localization_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch bunker_offline_localization bag_d_rviz_localization.launch.py playback_rate:=1.0
+```
+
+For a faster visual inspection, set `playback_rate:=2.0` or `playback_rate:=3.0`. Those rates use
+the same localization parameters but are visualization conveniences, not replacements for the
+saved 1x Full Gate result. Only an unbounded 1x run enables production full-bag accounting and its
+2181-input EOF sentinel. At any rate, normal bag EOF does not close RViz: the last map, registered
+scan, GICP/prediction poses, and accepted path remain displayed until Ctrl+C. The fixed frame is
+`map`; raw scan and correspondence displays remain available but are disabled by default in the
+existing RViz layout. Visualization output is isolated under `results/bag_D_rviz_localization/`
+and never overwrites the PASS baseline.
+
+The canonical quantitative baseline remains the headless Full Bag D Gate: `2176/2181` accepted,
+five isolated `NOT_CONVERGED` rejections, and `99.771%` acceptance. In one later manual 1x RViz
+visual replay, the terminal log reported `lidar=2181`, `processed=2181`, `accepted=2177`, and
+`rejected=4`. That one-scan difference is retained as observed replay variability, not claimed as
+an improvement and not used to replace the canonical Gate. The user visually confirmed that the
+registered scan and accepted path moved continuously over the Bag C map through the end of that
+replay. A single `Detected jump back in time. Clearing TF buffer.` warning occurred during the
+playback-start `/clock` reset; because all 2181 scans were subsequently processed, it is recorded
+as a benign startup warning for that replay, not as a general warning-suppression policy.

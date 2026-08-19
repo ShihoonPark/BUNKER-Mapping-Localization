@@ -91,3 +91,52 @@ def test_generic_independent_report_rpy_conversion_uses_ros_xyzw_convention():
     assert rpy[0, 0] == pytest.approx(0.0)
     assert rpy[0, 1] == pytest.approx(0.0)
     assert rpy[0, 2] == pytest.approx(np.pi / 2.0)
+
+
+def test_bag_d_rviz_launch_reuses_production_seed_and_full_bag_accounting(tmp_path):
+    production = load_module(
+        PACKAGE / "launch/bag_d_localization.launch.py", "bag_d_production_launch"
+    )
+    visualization = load_module(
+        PACKAGE / "launch/bag_d_rviz_localization.launch.py", "bag_d_rviz_launch"
+    )
+    seed_path = tmp_path / "coarse_seed.json"
+    seed_path.write_text(
+        json.dumps(
+            {
+                "success": True,
+                "best_candidate": {
+                    "T_map_lidar": {
+                        "translation": [3.0, 4.0, 0.2],
+                        "rotation_xyzw": [0.0, 0.0, 1.0, 0.0],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert visualization._seed_parameters(seed_path) == production._seed_parameters(
+        seed_path
+    )
+    assert visualization.INDEPENDENT_CONFIG == "independent_bag_D_20260819.yaml"
+    assert visualization.EKF_CONFIG == "ekf.yaml"
+    assert visualization._window_parameters()["time_window.enabled"] is False
+    full = visualization._full_bag_parameters(1.0, 0)
+    assert full["full_bag.enabled"] is True
+    assert full["full_bag.expected_lidar_inputs"] == 2181
+    assert full["full_bag.replay_rate"] == 1.0
+
+
+def test_bag_d_rviz_fast_replay_is_visualization_only_and_preserves_extrinsics():
+    launch = load_module(
+        PACKAGE / "launch/bag_d_rviz_localization.launch.py", "bag_d_rviz_fast_launch"
+    )
+    assert launch._production_verification_mode(1.0, 0) is True
+    assert launch._production_verification_mode(2.0, 0) is False
+    assert launch._production_verification_mode(3.0, 0) is False
+    assert launch._production_verification_mode(1.0, 40) is False
+    command = launch._bag_command("/tmp/read_only_bag", 3.0, True)
+    assert command[command.index("--rate") + 1] == "3.0"
+    assert command[command.index("--wait-for-all-acked") + 1] == "5000"
+    assert launch.BASE_TO_LIDAR_ARGUMENTS[launch.BASE_TO_LIDAR_ARGUMENTS.index("--z") + 1] == "0"
+    assert launch.LIDAR_TO_IMU_ARGUMENTS[launch.LIDAR_TO_IMU_ARGUMENTS.index("--z") + 1] == "-0.07"
