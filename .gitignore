@@ -6,3 +6,10 @@ CMakeFiles/
 .pytest_cache/
 __pycache__/
 *.pyc
+
+# External sensor recordings and local visualization state
+*.db3
+*.mcap
+*.bag
+*.active
+imgui.ini
