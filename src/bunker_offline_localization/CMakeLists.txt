@@ -85,6 +85,7 @@ install(DIRECTORY config launch rviz DESTINATION share/${PROJECT_NAME})
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
   scripts/generate_filter_comparison.py
+  scripts/generate_full_bag_report.py
   scripts/generate_gicp_vertical_observability_diagnostic.py
   scripts/generate_gicp_correspondence_rviz_diagnostic.py
   scripts/generate_imu_gicp_physical_gate.py
@@ -202,6 +203,14 @@ if(BUILD_TESTING)
     bag_d_relocalization_test
     COMMAND ${Python3_EXECUTABLE} -m pytest -q
       ${CMAKE_CURRENT_SOURCE_DIR}/test/bag_d_relocalization_test.py
+    GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    APPEND_ENV "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/scripts"
+    ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")
+
+  ament_add_test(
+    full_bag_report_test
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/full_bag_report_test.py
     GENERATE_RESULT_FOR_RETURN_CODE_ZERO
     APPEND_ENV "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/scripts"
     ENV "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1")

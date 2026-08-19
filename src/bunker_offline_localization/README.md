@@ -848,4 +848,30 @@ from `317/491` to `490/491` accepted. Maximum prediction step changed from
 `4.679 m / 96.204 deg` to `0.064 m / 9.072 deg`, and the longest rejection run changed from
 141 scans to one. The existing independent 163346 planar-EKF 0–50 s regression remained within
 its defined Gate at `485/490` accepted (minimum 485). The post-fix short Gate is `PASS`; full Bag D
-is recommended as the next Gate but was not executed as part of this diagnosis-only task.
+was subsequently executed as the separate full-bag Gate below.
+
+### Bag D full-bag independent localization Gate
+
+Replay the complete metadata interval at 1x with the unchanged Bag C map, ranked coarse seed,
+production EKF, small_gicp parameters, and quality gates:
+
+```bash
+cd /home/a/Desktop/shihoon/bunker_localization_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch bunker_offline_localization bag_d_localization.launch.py mode:=full
+```
+
+Generate the reusable map-relative stability report and the automatic comparison against the saved
+post-fix 0–50 s replay:
+
+```bash
+cd /home/a/Desktop/shihoon/bunker_localization_ws && PYTHONPATH=src/bunker_offline_localization/scripts:$PYTHONPATH python3 src/bunker_offline_localization/scripts/generate_full_bag_report.py --localization-csv results/bag_D_flat_20260819_localization_full/localization.csv --latency-csv results/bag_D_flat_20260819_localization_full/continuous_latency.csv --estimated-trajectory results/bag_D_flat_20260819_localization_full/estimated_traj_lidar.tum --full-bag-summary results/bag_D_flat_20260819_localization_full/full_bag_summary.json --short-localization-csv results/bag_D_prediction_discontinuity_diagnostic/post_fix_localization_0_50s/localization.csv --short-latency-csv results/bag_D_prediction_discontinuity_diagnostic/post_fix_localization_0_50s/continuous_latency.csv --map-ply /home/a/Desktop/shihoon/glim_real/20260819_flat/results/flat_bag_C_imu_on.ply --output-directory results/bag_D_flat_20260819_localization_full --origin-timestamp 1787142248.3215761 --metadata-duration-sec 219.251211092 --expected-scans 2181
+```
+
+The completed run processed all `2181/2181` LiDAR scans through EOF and accepted `2176`
+(`99.771%`). All five `NOT_CONVERGED` rejections were isolated one-scan runs. No prediction step
+exceeded 1 m or 30 deg, no catastrophic accepted jump was observed, and the final scan was
+accepted. The first full-replay 0–50 s interval reproduced the saved short replay at `490/491`
+accepted with identical statuses; accepted poses differed by at most 3.8 mm and 0.108 deg. The
+Gate is `PASS` for map-relative long-duration continuity. This is not an absolute accuracy claim:
+Bag D has no independent reference trajectory and the Bag C map has known vertical deformation.
+The report and plots are isolated under
+`results/bag_D_flat_20260819_localization_full/`.
