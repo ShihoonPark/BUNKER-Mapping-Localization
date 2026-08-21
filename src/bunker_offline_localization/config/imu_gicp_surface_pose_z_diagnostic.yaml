@@ -1,0 +1,54 @@
+inputs:
+  bag: /home/a/Desktop/shihoon/Slam/slam_flat_rc_20260814_163346
+  map_ply: /home/a/Desktop/shihoon/glim_real/20260814_classroom/results/classroom_150626.ply
+  localization_csv: /home/a/Desktop/shihoon/bunker_localization_ws/results/planar_ekf_gicp_gate/independent_163346_0_50s/localization.csv
+  plateau_diagnostic_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_plateau_label_diagnostic
+  physical_gate_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_physical_gate_stage_150mm
+  physical_gate_config: /home/a/Desktop/shihoon/bunker_localization_ws/src/bunker_offline_localization/config/imu_gicp_physical_gate.yaml
+
+output_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/imu_gicp_surface_pose_z_diagnostic
+
+time_window:
+  origin_timestamp: 1786692827.2210245
+  start_sec: 0.0
+  end_sec: 50.0
+
+# These IDs are a human-reviewed, predeclared input to this Gate. They must not be changed by z,
+# measured height, candidate-pair errors, or fit residuals.
+fixed_physical_labels:
+  ground_before: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  stage_top: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+  ground_after: unavailable
+  label_source:
+    - route_topology
+    - spatial_candidate_overlay
+    - first_ramp_transition
+    - actual_driving_sequence
+  measured_height_used_for_labeling: false
+  candidate_z_used_for_labeling: false
+  candidate_pair_error_used_for_labeling: false
+
+speed_association:
+  # Candidate 6 overlaps a short odom sparsity interval; nearest speed remains diagnostic-only.
+  maximum_dt_sec: 0.15
+
+robust_fit:
+  method: deterministic_huber_irls
+  huber_parameter: 1.345
+  maximum_iterations: 100
+  convergence_tolerance: 1.0e-10
+  minimum_scale_m: 1.0e-9
+  scale_estimator: 1.4826_times_median_absolute_deviation_about_residual_median
+
+bootstrap:
+  method: candidate_block_within_each_physical_label
+  samples: 1000
+  seed: 20260818
+
+plot:
+  map_max_points: 50000
+
+interpretation:
+  fitted_quantity: map_frame_lidar_sensor_center_pose_z_spatial_support_plane
+  exact_map_floor_tilt_established: false
+  exact_base_lidar_extrinsic_available: false

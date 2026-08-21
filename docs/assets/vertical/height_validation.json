@@ -1,0 +1,136 @@
+{
+  "absolute_error_m": 0.20139143664325218,
+  "after_reference_height_m": -0.051473616464020225,
+  "before_after_consistency": {
+    "consistent": true,
+    "difference_m": 0.0018780908624929232,
+    "status": "CONSISTENT",
+    "tolerance_m": 0.05
+  },
+  "before_after_difference_m": 0.0018780908624929232,
+  "before_reference_height_m": -0.0495955256015273,
+  "bootstrap_95pct_ci_m": [
+    -0.07160723425613465,
+    -0.02693327150978153
+  ],
+  "estimated_stage_height_m": -0.051391436643252186,
+  "fixed_offset_assumption": "A fixed LiDAR/base height offset cancels between flat plateaus.",
+  "ground_after_estimate_m": -0.051473616464020225,
+  "ground_before_estimate_m": -0.0495955256015273,
+  "ground_plane": {
+    "a_dz_dx": 0.09305365386566852,
+    "b_dz_dy": 0.11016332622799736,
+    "c_m": -0.5631770553278221,
+    "robust_spread_m": 0.01947416881702679,
+    "slope_angle_deg": 8.20574257033721,
+    "slope_magnitude": 0.1442045108287803,
+    "slope_warning": true,
+    "slope_warning_threshold": 0.1
+  },
+  "manual_plateau_windows": null,
+  "manual_plateau_windows_complete": false,
+  "measured_stage_height_m": 0.15,
+  "measurement_method": "manual_vertical_measurement",
+  "measurement_reference": "classroom_carpet_surface_to_flat_stage_top_surface",
+  "physical_stage_height_available": true,
+  "physical_stage_height_m": 0.15,
+  "plateau_selection": {
+    "ambiguity_reasons": [],
+    "ambiguous": false,
+    "external_surface_label_confirmation": false,
+    "groups": {
+      "ground_after": {
+        "candidate_ids": [
+          5,
+          6,
+          7
+        ],
+        "candidate_sample_counts": [
+          8,
+          7,
+          9
+        ],
+        "time_windows_sec": [
+          [
+            35.56563425064087,
+            36.26697111129761
+          ],
+          [
+            36.567514419555664,
+            37.16870164871216
+          ],
+          [
+            37.970144748687744,
+            38.77167725563049
+          ]
+        ],
+        "total_samples": 24
+      },
+      "ground_before": {
+        "candidate_ids": [
+          1,
+          2,
+          3
+        ],
+        "candidate_sample_counts": [
+          7,
+          11,
+          11
+        ],
+        "time_windows_sec": [
+          [
+            20.036577224731445,
+            20.637678623199463
+          ],
+          [
+            20.737870931625366,
+            21.7397518157959
+          ],
+          [
+            22.9419903755188,
+            23.94386863708496
+          ]
+        ],
+        "total_samples": 29
+      },
+      "stage_top": {
+        "candidate_ids": [
+          4
+        ],
+        "candidate_sample_counts": [
+          7
+        ],
+        "time_windows_sec": [
+          [
+            33.46169590950012,
+            34.06282424926758
+          ]
+        ],
+        "total_samples": 7
+      }
+    },
+    "measured_height_used_for_selection": false,
+    "method": "temporal_partition_around_ramp_window",
+    "ramp_window_sec": [
+      25.0,
+      35.0
+    ],
+    "selection_completed_before_physical_comparison": true,
+    "surface_identity_basis": "predeclared_ground_to_ramp_to_ground_temporal_sequence"
+  },
+  "ramp_lever_arm_caveat": "Only stable candidate samples are fit because ramp attitude creates lever-arm effects.",
+  "raw_ramp_z_range_m": 0.37378948712672666,
+  "raw_ramp_z_range_used_for_estimate": false,
+  "reason": "Physical comparison used a height-independent temporal partition of pre-detected candidates.",
+  "relative_error": 1.3426095776216813,
+  "relative_error_percent": 134.26095776216812,
+  "robust_spread_m": 0.008930622355180492,
+  "sample_count": {
+    "ground_after": 24,
+    "ground_before": 29,
+    "stage_top": 7
+  },
+  "status": "HEIGHT_FAIL",
+  "tolerance_interpretation": "initial_screening_threshold_not_calibrated_accuracy",
+  "tolerance_m": 0.05
+}

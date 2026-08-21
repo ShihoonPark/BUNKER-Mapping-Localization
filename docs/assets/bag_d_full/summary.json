@@ -1,0 +1,584 @@
+{
+  "absolute_accuracy_available": false,
+  "absolute_rmse_reported": false,
+  "accepted_trajectory_continuity": {
+    "catastrophic_rotation_jump_count": 0,
+    "catastrophic_rotation_threshold_deg": 30.0,
+    "catastrophic_translation_jump_count": 0,
+    "catastrophic_translation_threshold_m": 1.0,
+    "contiguous_dt_threshold_sec": 0.25,
+    "finite_accepted_pose_count": 2176,
+    "map_xy_bounding_box": {
+      "accepted_inside_count": 2176,
+      "accepted_outside_count": 0,
+      "inside_fraction": 1.0,
+      "maximum": [
+        6.766557693481445,
+        8.546086311340332
+      ],
+      "minimum": [
+        -5.64574670791626,
+        -3.5818092823028564
+      ],
+      "note": "Bounding-box containment plus overlay is a continuity screen, not accuracy proof."
+    },
+    "path_length_m": 75.2105732907119,
+    "rotation_step_deg": {
+      "count": 2175,
+      "max": 7.737410711201265,
+      "mean": 1.2569445019403063,
+      "median": 0.2810861338799365,
+      "min": 0.012517201726694207,
+      "p95": 4.570929876854113,
+      "p99": 5.445313957590599
+    },
+    "steps_across_rejection_gaps_excluded": 0,
+    "translation_step_m": {
+      "count": 2175,
+      "max": 0.11049700462191343,
+      "mean": 0.03457957392676409,
+      "median": 0.0386390946818114,
+      "min": 0.00046929546857835456,
+      "p95": 0.050036871673807326,
+      "p99": 0.057423578868622545
+    }
+  },
+  "final_accepted_to_last_lidar_sec": 0.0,
+  "gate": "Bag D full independent localization stability",
+  "gate_checks": {
+    "all_accepted_poses_finite": true,
+    "eof_and_all_inputs_accounted": true,
+    "final_acceptance_reaches_bag_end": true,
+    "no_catastrophic_accepted_jump": true,
+    "no_large_prediction_discontinuity": true,
+    "no_rejection_cascade": true,
+    "no_temporal_segment_collapse": true,
+    "short_window_regression_near_identical": true
+  },
+  "gicp_correction": {
+    "rotation_deg": {
+      "count": 2181,
+      "max": 3.342042004097228,
+      "mean": 0.32929129791107037,
+      "median": 0.2490635134280041,
+      "min": 0.00347616789305315,
+      "p95": 0.7989934062385669,
+      "p99": 1.2509644673116471
+    },
+    "translation_m": {
+      "count": 2181,
+      "max": 0.06287258573336811,
+      "mean": 0.009185870160143408,
+      "median": 0.007646704851265947,
+      "min": 0.00022876984121804114,
+      "p95": 0.021745841252074603,
+      "p99": 0.03228236364647644
+    }
+  },
+  "input_accounting": {
+    "accepted_scans": 2176,
+    "after_first_timing_gap": {
+      "accepted_scans": 0,
+      "first_accepted_bag_relative_sec": null,
+      "first_accepted_timestamp": null,
+      "processed_scans": 0,
+      "recovered": false,
+      "reject_reason_counts": {
+        "EMPTY_SCAN": 0,
+        "HIGH_ERROR": 0,
+        "LOW_INLIERS": 0,
+        "NONFINITE_TRANSFORM": 0,
+        "NOT_CONVERGED": 0,
+        "NO_PREDICTION": 0,
+        "REGISTRATION_EXCEPTION": 0,
+        "ROTATION_JUMP": 0,
+        "TIMESTAMP_MISMATCH": 0,
+        "TRANSLATION_JUMP": 0
+      },
+      "rejected_scans": 0
+    },
+    "all_bag_lidar_inputs_received": true,
+    "all_lidar_inputs_accounted": true,
+    "bag_eof_received": true,
+    "bag_metadata_lidar_inputs": 2181,
+    "crash_detected": false,
+    "final_accepted_bag_relative_sec": 219.18764448165894,
+    "final_accepted_timestamp": 1787142467.5092206,
+    "finite_timestamp_lidar_inputs": 2181,
+    "first_processed_bag_relative_sec": 0.8923618793487549,
+    "first_timing_gap": {
+      "current_bag_relative_sec": null,
+      "current_timestamp": null,
+      "detected": false,
+      "duration_sec": null,
+      "previous_bag_relative_sec": null,
+      "previous_timestamp": null,
+      "threshold_sec": 1.25
+    },
+    "last_lidar_bag_relative_sec": 219.18764448165894,
+    "last_lidar_timestamp": 1787142467.5092206,
+    "last_processed_bag_relative_sec": 219.18764448165894,
+    "mode": "full_bag",
+    "pending_scans_after_eof_flush": 0,
+    "pending_scans_at_eof": 0,
+    "process_survived_to_bag_eof": true,
+    "processed_scans": 2181,
+    "reject_reason_counts": {
+      "EMPTY_SCAN": 0,
+      "HIGH_ERROR": 0,
+      "LOW_INLIERS": 0,
+      "NONFINITE_TRANSFORM": 0,
+      "NOT_CONVERGED": 5,
+      "NO_PREDICTION": 0,
+      "REGISTRATION_EXCEPTION": 0,
+      "ROTATION_JUMP": 0,
+      "TIMESTAMP_MISMATCH": 0,
+      "TRANSLATION_JUMP": 0
+    },
+    "rejected_scans": 5,
+    "replay_rate": 1,
+    "skipped_after_window": 0,
+    "skipped_before_reference": 0,
+    "skipped_before_window": 0,
+    "skipped_invalid_timestamp": 0,
+    "skipped_scans": 0,
+    "time_window_enabled": false,
+    "total_lidar_inputs": 2181
+  },
+  "interpretation": "map-relative continuity; not absolute ground-truth accuracy",
+  "minimum_segment_acceptance_rate": 0.9895833333333334,
+  "prediction": {
+    "largest_translation_offset_sec": 111.01140785217285,
+    "largest_yaw_offset_sec": 28.15956211090088,
+    "over_0_5m_count": 0,
+    "over_1_0m_count": 0,
+    "over_20deg_count": 0,
+    "over_30deg_count": 0,
+    "startup_discontinuity_screen": {
+      "previous_failure_window_sec": [
+        8.0,
+        10.5
+      ],
+      "previous_failure_window_translation_max_m": 0.004803142026473839,
+      "previous_failure_window_yaw_max_deg": 0.06487227164326086,
+      "recurrence_detected": false,
+      "translation_over_1m_count": 0,
+      "window_sec": [
+        0.0,
+        15.0
+      ],
+      "yaw_over_30deg_count": 0
+    },
+    "translation_step_m": {
+      "count": 2180,
+      "max": 0.08518784870626843,
+      "mean": 0.03315466899411493,
+      "median": 0.03755300716947248,
+      "min": 1.6391556626236042e-07,
+      "p95": 0.04895814275054407,
+      "p99": 0.055441940071375366
+    },
+    "yaw_step_deg": {
+      "count": 2180,
+      "max": 9.07225468537023,
+      "mean": 1.1884262819492872,
+      "median": 0.17097113525111526,
+      "min": 0.00011610217440380678,
+      "p95": 4.594140141002551,
+      "p99": 5.4974597838045165
+    }
+  },
+  "registration": {
+    "acceptance_rate": 0.9977074736359468,
+    "accepted_scans": 2176,
+    "converged_scans": 2176,
+    "convergence_rate": 0.9977074736359468,
+    "final_error_per_inlier": {
+      "count": 2181,
+      "max": 0.4956087552083724,
+      "mean": 0.1334180308098318,
+      "median": 0.11851308652309157,
+      "min": 0.08033734292410923,
+      "p95": 0.22812296751010705,
+      "p99": 0.3372851467373999
+    },
+    "inliers": {
+      "count": 2181,
+      "max": 3309.0,
+      "mean": 2823.7028885832187,
+      "median": 2842.0,
+      "min": 2393.0,
+      "p95": 3153.0,
+      "p99": 3212.0
+    },
+    "iterations": {
+      "count": 2181,
+      "max": 29.0,
+      "mean": 2.4030261348005504,
+      "median": 2.0,
+      "min": 0.0,
+      "p95": 4.0,
+      "p99": 6.0
+    },
+    "longest_consecutive_rejection_run_scans": 1,
+    "reject_reason_counts": {
+      "NOT_CONVERGED": 5
+    },
+    "rejected_scans": 5,
+    "rejection_runs": [
+      {
+        "duration_sec": 0.0,
+        "end_offset_sec": 16.73155665397644,
+        "end_processed_index": 159,
+        "length_scans": 1,
+        "reasons": {
+          "NOT_CONVERGED": 1
+        },
+        "run_id": 1,
+        "start_offset_sec": 16.73155665397644,
+        "start_processed_index": 159
+      },
+      {
+        "duration_sec": 0.0,
+        "end_offset_sec": 110.8110613822937,
+        "end_processed_index": 1099,
+        "length_scans": 1,
+        "reasons": {
+          "NOT_CONVERGED": 1
+        },
+        "run_id": 2,
+        "start_offset_sec": 110.8110613822937,
+        "start_processed_index": 1099
+      },
+      {
+        "duration_sec": 0.0,
+        "end_offset_sec": 197.35282039642334,
+        "end_processed_index": 1963,
+        "length_scans": 1,
+        "reasons": {
+          "NOT_CONVERGED": 1
+        },
+        "run_id": 3,
+        "start_offset_sec": 197.35282039642334,
+        "start_processed_index": 1963
+      },
+      {
+        "duration_sec": 0.0,
+        "end_offset_sec": 201.65973043441772,
+        "end_processed_index": 2006,
+        "length_scans": 1,
+        "reasons": {
+          "NOT_CONVERGED": 1
+        },
+        "run_id": 4,
+        "start_offset_sec": 201.65973043441772,
+        "start_processed_index": 2006
+      },
+      {
+        "duration_sec": 0.0,
+        "end_offset_sec": 214.1798791885376,
+        "end_processed_index": 2131,
+        "length_scans": 1,
+        "reasons": {
+          "NOT_CONVERGED": 1
+        },
+        "run_id": 5,
+        "start_offset_sec": 214.1798791885376,
+        "start_processed_index": 2131
+      }
+    ]
+  },
+  "runtime": {
+    "core_localization_latency_ms": {
+      "count": 2181,
+      "max": 46.483106,
+      "mean": 12.942317549747822,
+      "median": 11.045063,
+      "min": 1.85967,
+      "p95": 32.268613,
+      "p99": 39.59830759999993
+    },
+    "registration_runtime_ms": {
+      "count": 2181,
+      "max": 6.074576,
+      "mean": 2.185130790921596,
+      "median": 2.165277,
+      "min": 1.407723,
+      "p95": 2.781573,
+      "p99": 3.1787522
+    },
+    "separated": true
+  },
+  "short_window_regression": {
+    "accepted_pose_rotation_difference_deg": {
+      "count": 490,
+      "max": 0.1077224064217914,
+      "mean": 0.0019646946801131337,
+      "median": 0.0,
+      "min": 0.0,
+      "p95": 0.01017722535666434,
+      "p99": 0.033890852503291026
+    },
+    "accepted_pose_translation_difference_m": {
+      "count": 490,
+      "max": 0.0037824710401868377,
+      "mean": 8.062301327807527e-05,
+      "median": 1.3564658425615754e-15,
+      "min": 0.0,
+      "p95": 0.0004993696356069472,
+      "p99": 0.001250144598202479
+    },
+    "comparison_window_sec": [
+      0.0,
+      50.0
+    ],
+    "counts_and_reasons_identical": true,
+    "full_first_50s": {
+      "accepted_scans": 490,
+      "correction_translation_m": {
+        "count": 491,
+        "max": 0.04414821327284848,
+        "mean": 0.00801138554795278,
+        "median": 0.006574496842842465,
+        "min": 0.00022876984121804114,
+        "p95": 0.019258104828168813,
+        "p99": 0.03105948976380357
+      },
+      "prediction_translation_m": {
+        "count": 490,
+        "max": 0.06408260967988105,
+        "mean": 0.023450083075162748,
+        "median": 0.029827533843243124,
+        "min": 7.654772219300752e-05,
+        "p95": 0.041606862182010464,
+        "p99": 0.052747333475271836
+      },
+      "prediction_yaw_deg": {
+        "count": 490,
+        "max": 9.07225468537023,
+        "mean": 1.225369053145636,
+        "median": 0.10319639962981061,
+        "min": 0.00030343098449928525,
+        "p95": 5.013520290850402,
+        "p99": 5.474159347180426
+      },
+      "processed_scans": 491,
+      "registration_runtime_ms": {
+        "count": 491,
+        "max": 5.599386,
+        "mean": 2.093615134419552,
+        "median": 2.089425,
+        "min": 1.407723,
+        "p95": 2.7478800000000003,
+        "p99": 3.0898885
+      },
+      "reject_reason_counts": {
+        "NOT_CONVERGED": 1
+      },
+      "rejected_scans": 1
+    },
+    "matched_timestamps": 491,
+    "near_identical": true,
+    "near_identical_thresholds": {
+      "maximum_rotation_difference_deg": 0.25,
+      "maximum_translation_difference_m": 0.005
+    },
+    "post_fix_short_baseline": {
+      "accepted_scans": 490,
+      "correction_translation_m": {
+        "count": 491,
+        "max": 0.04414821325602005,
+        "mean": 0.008005344388683902,
+        "median": 0.00653559201961176,
+        "min": 0.00022876984121804114,
+        "p95": 0.019402412006725052,
+        "p99": 0.03078192473820734
+      },
+      "prediction_translation_m": {
+        "count": 490,
+        "max": 0.06408260963898865,
+        "mean": 0.023451700143617502,
+        "median": 0.029860901696252773,
+        "min": 7.654772219300752e-05,
+        "p95": 0.041590178369591224,
+        "p99": 0.05279239384583097
+      },
+      "prediction_yaw_deg": {
+        "count": 490,
+        "max": 9.072254685377159,
+        "mean": 1.2251366051420034,
+        "median": 0.10087410144007854,
+        "min": 0.0001903190494939118,
+        "p95": 5.013520290847447,
+        "p99": 5.482294394364675
+      },
+      "processed_scans": 491,
+      "registration_runtime_ms": {
+        "count": 491,
+        "max": 5.517058,
+        "mean": 2.0677602953156824,
+        "median": 2.059152,
+        "min": 1.397938,
+        "p95": 2.6154135,
+        "p99": 3.0224486000000033
+      },
+      "reject_reason_counts": {
+        "NOT_CONVERGED": 1
+      },
+      "rejected_scans": 1
+    },
+    "status_mismatches": 0,
+    "timing": {
+      "full_first_50s": {
+        "core_localization_latency_ms": {
+          "count": 491,
+          "max": 46.483106,
+          "mean": 13.636580260692465,
+          "median": 11.187818,
+          "min": 1.85967,
+          "p95": 35.003886,
+          "p99": 42.8812704
+        },
+        "registration_runtime_ms": {
+          "count": 491,
+          "max": 5.599386,
+          "mean": 2.093615134419552,
+          "median": 2.089425,
+          "min": 1.407723,
+          "p95": 2.7478800000000003,
+          "p99": 3.0898885
+        },
+        "sample_count": 491
+      },
+      "post_fix_short_baseline": {
+        "core_localization_latency_ms": {
+          "count": 491,
+          "max": 44.555271,
+          "mean": 16.08343131771894,
+          "median": 12.934383,
+          "min": 1.723399,
+          "p95": 41.584016,
+          "p99": 44.278492899999996
+        },
+        "registration_runtime_ms": {
+          "count": 491,
+          "max": 5.517058,
+          "mean": 2.0677602953156824,
+          "median": 2.059152,
+          "min": 1.397938,
+          "p95": 2.6154135,
+          "p99": 3.0224486000000033
+        },
+        "sample_count": 491
+      }
+    }
+  },
+  "six_dof_behavior": {
+    "pitch_deg": {
+      "count": 2176,
+      "max": 3.9350627730537515,
+      "mean": 1.5021702950841997,
+      "median": 1.9364770613968352,
+      "min": -1.5903271294862509,
+      "p95": 3.328403211431061,
+      "p99": 3.5808193333542535
+    },
+    "pitch_range_deg": 5.525389902540002,
+    "roll_deg": {
+      "count": 2176,
+      "max": 2.5277865933452683,
+      "mean": -0.0944006348983078,
+      "median": -0.6709196877322873,
+      "min": -3.2647688461940914,
+      "p95": 2.119913959714614,
+      "p99": 2.3354871867266738
+    },
+    "roll_range_deg": 5.79255543953936,
+    "z_m": {
+      "count": 2176,
+      "max": 0.17229946941873067,
+      "mean": 0.05449577714980414,
+      "median": 0.05678195870105115,
+      "min": -0.0879476289092095,
+      "p95": 0.14319944220913408,
+      "p99": 0.1499595863695256
+    },
+    "z_range_m": 0.2602470983279402
+  },
+  "time_segments": [
+    {
+      "acceptance_rate": 0.9979633401221996,
+      "accepted_scans": 490,
+      "end_offset_sec": 50.0,
+      "gicp_correction_translation_max_m": 0.04414821327284848,
+      "label": "0-50 s",
+      "prediction_translation_max_m": 0.06408260967988105,
+      "prediction_yaw_max_deg": 9.07225468537023,
+      "processed_scans": 491,
+      "reject_reason_counts": {
+        "NOT_CONVERGED": 1
+      },
+      "rejected_scans": 1,
+      "start_offset_sec": 0.0
+    },
+    {
+      "acceptance_rate": 1.0,
+      "accepted_scans": 500,
+      "end_offset_sec": 100.0,
+      "gicp_correction_translation_max_m": 0.04969126275566682,
+      "label": "50-100 s",
+      "prediction_translation_max_m": 0.06273422680975384,
+      "prediction_yaw_max_deg": 7.1911430889307395,
+      "processed_scans": 500,
+      "reject_reason_counts": {},
+      "rejected_scans": 0,
+      "start_offset_sec": 50.0
+    },
+    {
+      "acceptance_rate": 0.9979959919839679,
+      "accepted_scans": 498,
+      "end_offset_sec": 150.0,
+      "gicp_correction_translation_max_m": 0.06287258573336811,
+      "label": "100-150 s",
+      "prediction_translation_max_m": 0.08518784870626843,
+      "prediction_yaw_max_deg": 6.8795816121245945,
+      "processed_scans": 499,
+      "reject_reason_counts": {
+        "NOT_CONVERGED": 1
+      },
+      "rejected_scans": 1,
+      "start_offset_sec": 100.0
+    },
+    {
+      "acceptance_rate": 0.9979959919839679,
+      "accepted_scans": 498,
+      "end_offset_sec": 200.0,
+      "gicp_correction_translation_max_m": 0.053113577102936245,
+      "label": "150-200 s",
+      "prediction_translation_max_m": 0.07656952992869048,
+      "prediction_yaw_max_deg": 5.0181033466994025,
+      "processed_scans": 499,
+      "reject_reason_counts": {
+        "NOT_CONVERGED": 1
+      },
+      "rejected_scans": 1,
+      "start_offset_sec": 150.0
+    },
+    {
+      "acceptance_rate": 0.9895833333333334,
+      "accepted_scans": 190,
+      "end_offset_sec": 219.251211092,
+      "gicp_correction_translation_max_m": 0.025886874706359243,
+      "label": "200-EOF",
+      "prediction_translation_max_m": 0.02020019609439296,
+      "prediction_yaw_max_deg": 6.1178578180628875,
+      "processed_scans": 192,
+      "reject_reason_counts": {
+        "NOT_CONVERGED": 2
+      },
+      "rejected_scans": 2,
+      "start_offset_sec": 200.0
+    }
+  ],
+  "verdict": "PASS"
+}

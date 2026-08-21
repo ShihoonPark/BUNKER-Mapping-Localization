@@ -1,0 +1,247 @@
+{
+  "after": {
+    "acceptance_percent": 99.79633401221996,
+    "accepted": 490,
+    "accepted_contiguous_catastrophic_rotation_count": 0,
+    "accepted_contiguous_catastrophic_translation_count": 0,
+    "accepted_pose_rotation_step_deg": {
+      "max": 5.677208798289124,
+      "mean": 1.2876495564468764,
+      "p95": 5.032340377860102
+    },
+    "accepted_pose_translation_step_m": {
+      "max": 0.06094126002652635,
+      "mean": 0.024921071950062483,
+      "p95": 0.04346963873627338
+    },
+    "final_error_per_inlier": {
+      "max": 0.4956087552083698,
+      "mean": 0.1343794655954476,
+      "p95": 0.22502277180110972
+    },
+    "gicp_correction_translation_m": {
+      "max": 0.04414821325602005,
+      "mean": 0.008005344388683902,
+      "p95": 0.019402412006725052
+    },
+    "inliers": {
+      "max": 3175.0,
+      "mean": 2728.2912423625253,
+      "p95": 3104.0
+    },
+    "longest_rejection_run": {
+      "count": 1,
+      "end_sec": 16.73155665397644,
+      "reasons": {
+        "NOT_CONVERGED": 1
+      },
+      "start_sec": 16.73155665397644
+    },
+    "pitch_range_deg": [
+      -1.113534665778002,
+      3.712808692516669
+    ],
+    "prediction_nonphysical_jump_count": 0,
+    "prediction_translation_step_m": {
+      "max": 0.06408260963898865,
+      "mean": 0.023451700143617502,
+      "p95": 0.041590178369591224
+    },
+    "prediction_yaw_step_deg": {
+      "max": 9.072254685377159,
+      "mean": 1.2251366051420034,
+      "p95": 5.013520290847447
+    },
+    "processed": 491,
+    "reject_reasons": {
+      "NOT_CONVERGED": 1
+    },
+    "rejected": 1,
+    "roll_range_deg": [
+      -2.0914048344666347,
+      2.402134789795798
+    ],
+    "runtime_ms": {
+      "max": 5.517058,
+      "mean": 2.0677602953156824,
+      "p95": 2.6154135
+    },
+    "z_range_m": [
+      -0.036330865121201275,
+      0.14804845729459204
+    ]
+  },
+  "before": {
+    "acceptance_percent": 64.5621181262729,
+    "accepted": 317,
+    "accepted_contiguous_catastrophic_rotation_count": 0,
+    "accepted_contiguous_catastrophic_translation_count": 0,
+    "accepted_pose_rotation_step_deg": {
+      "max": 96.93380057877101,
+      "mean": 2.3886067855922093,
+      "p95": 5.723284328119279
+    },
+    "accepted_pose_translation_step_m": {
+      "max": 3.2509610526170256,
+      "mean": 0.047340463313681906,
+      "p95": 0.09436594126044379
+    },
+    "final_error_per_inlier": {
+      "max": 0.45765095207001694,
+      "mean": 0.3022264984036226,
+      "p95": 0.40614853284376484
+    },
+    "gicp_correction_translation_m": {
+      "max": 1.510828864506819,
+      "mean": 0.41136341769735796,
+      "p95": 1.4789646581990503
+    },
+    "inliers": {
+      "max": 2765.0,
+      "mean": 2437.661914460285,
+      "p95": 2686.5
+    },
+    "longest_rejection_run": {
+      "count": 141,
+      "end_sec": 23.247550010681152,
+      "reasons": {
+        "NOT_CONVERGED": 21,
+        "TRANSLATION_JUMP": 120
+      },
+      "start_sec": 9.213096857070923
+    },
+    "pitch_range_deg": [
+      -1.9416647754017513,
+      3.999989048230609
+    ],
+    "prediction_nonphysical_jump_count": 1,
+    "prediction_translation_step_m": {
+      "max": 4.679178793625619,
+      "mean": 0.03813760583145785,
+      "p95": 0.07703541807584245
+    },
+    "prediction_yaw_step_deg": {
+      "max": 96.20444125786814,
+      "mean": 1.4561378031811993,
+      "p95": 5.147058452456726
+    },
+    "processed": 491,
+    "reject_reasons": {
+      "NOT_CONVERGED": 54,
+      "TRANSLATION_JUMP": 120
+    },
+    "rejected": 174,
+    "roll_range_deg": [
+      -3.5629223578500975,
+      3.097886471833152
+    ],
+    "runtime_ms": {
+      "max": 10.816919,
+      "mean": 3.3858022219959265,
+      "p95": 6.992772
+    },
+    "z_range_m": [
+      -0.04290503558830603,
+      0.1390907430790025
+    ]
+  },
+  "change": {
+    "coarse_seed_sha256": "5669807d0e61bb10423d68d0585c3867c0ef08d9be51b45e701bf66f59ead624",
+    "gicp_and_localization_gate_parameters_changed": false,
+    "odom0_pose_rejection_threshold_unchanged": 5.0,
+    "odom0_relative_after": true,
+    "odom0_relative_before": false,
+    "odom0_twist_rejection_threshold_unchanged": 5.0
+  },
+  "pass_criteria": {
+    "accepted_catastrophic_rotation_count": 0,
+    "accepted_catastrophic_translation_count": 0,
+    "gicp_parameters_unchanged": true,
+    "new_prediction_over_1m_or_30deg_count": 0,
+    "old_9_213_discontinuity_removed": true,
+    "verdict": "PASS"
+  },
+  "post_fix_layer_check": {
+    "adapted_odom_jump_count": 0,
+    "analysis_window_bag_relative_sec": [
+      7.0,
+      11.5
+    ],
+    "ekf_filtered_jump_count": 0,
+    "first_discontinuity": null,
+    "localizer_prediction_jump_count": 0,
+    "raw_odom_jump_count": 0,
+    "thresholds": {
+      "translation_m": 0.5,
+      "yaw_deg": 20.0
+    }
+  },
+  "pre_fix_first_discontinuity": {
+    "bag_relative_sec": 9.138969421386719,
+    "current_pose": {
+      "x": 2.7722623283587935,
+      "y": 3.6614247981283308,
+      "yaw_rad": -1.6536224403148945
+    },
+    "delta_translation_m": 4.592545042738983,
+    "delta_yaw_deg": 94.69253380234807,
+    "downstream_effect": {
+      "accepted": false,
+      "anchor_ekf": {
+        "x": 0.0,
+        "y": 0.0,
+        "yaw_rad": -0.0009259484078953939
+      },
+      "anchor_gicp": {
+        "x": 3.7762830784096515,
+        "y": 6.896538220074263,
+        "yaw_rad": -3.034524178052656
+      },
+      "bag_relative_sec": 9.213096857070923,
+      "current_ekf_used": {
+        "timestamp": 1787142257.5205195,
+        "x": 2.9133020199414803,
+        "y": 3.660744596525982,
+        "yaw_rad": -1.6801127481437068
+      },
+      "gicp_correction_translation_m": 1.4741219858155357,
+      "lidar_timestamp": 1787142257.534673,
+      "predicted_T_map_lidar": {
+        "x": 1.274525166941721,
+        "y": 2.943110971117113,
+        "yaw_rad": 1.5694743293911184
+      },
+      "prediction_step_translation_m": 4.679178793625619,
+      "prediction_step_yaw_deg": 96.20444125786814,
+      "previous_prediction": {
+        "x": 3.7757004402806196,
+        "y": 6.897707844978441,
+        "yaw_rad": -3.0346267227971935
+      },
+      "raw_gicp_T_map_lidar": {
+        "x": 1.982142281142189,
+        "y": 1.6534745630999184,
+        "yaw_rad": 1.6410541039249993
+      },
+      "reject_reason": "TRANSLATION_JUMP",
+      "relative_motion": {
+        "dx": 2.9099111108909717,
+        "dy": 3.6634405941822714,
+        "dyaw_rad": -1.6791867997358114
+      }
+    },
+    "layer": "EKF_FILTERED",
+    "previous_pose": {
+      "timestamp": 1787142257.4205794,
+      "x": 0.0,
+      "y": 0.0,
+      "yaw_rad": -0.0009259484078953939
+    },
+    "timestamp": 1787142257.4605455,
+    "upstream_layer_delta": {
+      "adapted_odom_jump_count": 0,
+      "raw_adapted_max_state_difference": 0.0,
+      "raw_odom_jump_count": 0
+    }
+  }
+}

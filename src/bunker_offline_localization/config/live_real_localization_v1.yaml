@@ -1,0 +1,51 @@
+coarse_global_initializer:
+  ros__parameters:
+    use_sim_time: false
+    cloud_topic: /velodyne_points
+    expected_lidar_frame: velodyne
+    source_role: live /velodyne_points first usable stationary scan
+
+covariance_adapter:
+  ros__parameters:
+    use_sim_time: false
+    odom_input: /odom
+    imu_input: /imu/data
+    odom_output: /localization/odom_with_covariance
+    imu_output: /localization/imu_with_covariance
+    time_window:
+      enabled: false
+      origin_timestamp: 0.0
+      start_offset_sec: 0.0
+      end_offset_sec: 0.0
+
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: false
+
+offline_localizer:
+  ros__parameters:
+    use_sim_time: false
+    cloud_topic: /velodyne_points
+    prediction_topic: /localization/odometry/filtered
+    expected_lidar_frame: velodyne
+    max_scans: 0
+    initialization:
+      mode: parameter
+    time_window:
+      enabled: false
+      origin_timestamp: 0.0
+      start_offset_sec: 0.0
+      end_offset_sec: 0.0
+    full_bag:
+      enabled: false
+    diagnostics:
+      enabled: true
+      publish_visualization: false
+      publish_accepted_pose: true
+      publish_correspondences_every_n_scans: 0
+      map_frame: map
+      localized_lidar_frame: localized_velodyne
+    base_to_lidar:
+      available: false
+      # PHASE-1 PLANAR APPROXIMATION / NOT CALIBRATED.
+      allow_identity_for_phase1_smoke_test: true

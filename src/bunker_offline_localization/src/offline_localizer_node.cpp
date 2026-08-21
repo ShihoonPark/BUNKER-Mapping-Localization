@@ -1,0 +1,950 @@
+#include "bunker_offline_localization/accepted_pose_predictor.hpp"
+#include "bunker_offline_localization/diagnostic_utils.hpp"
+#include "bunker_offline_localization/gicp_diagnostics.hpp"
+#include "bunker_offline_localization/map_loader.hpp"
+#include "bunker_offline_localization/metrics.hpp"
+#include "bunker_offline_localization/reference_trajectory.hpp"
+#include "bunker_offline_localization/registration.hpp"
+#include "bunker_offline_localization/scan_preprocessor.hpp"
+#include "bunker_offline_localization/time_window.hpp"
+#include "bunker_offline_localization/transforms.hpp"
+
+#include <geometry_msgs/msg/vector3_stamped.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/empty.hpp>
+
+#include <Eigen/Geometry>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace bunker_offline_localization {
+namespace {
+
+double stampSeconds(const builtin_interfaces::msg::Time& stamp)
+{
+  return static_cast<double>(stamp.sec) + 1.0e-9 * static_cast<double>(stamp.nanosec);
+}
+
+Eigen::Isometry3d odometryPose(const nav_msgs::msg::Odometry& message)
+{
+  const auto& position = message.pose.pose.position;
+  const auto& orientation = message.pose.pose.orientation;
+  return makeTransform(
+    position.x, position.y, position.z,
+    orientation.x, orientation.y, orientation.z, orientation.w);
+}
+
+Eigen::Isometry3d nanTransform()
+{
+  Eigen::Isometry3d transform;
+  transform.matrix().setConstant(std::numeric_limits<double>::quiet_NaN());
+  return transform;
+}
+
+struct TimedPrediction {
+  double timestamp{};
+  Eigen::Isometry3d T_odom_base{Eigen::Isometry3d::Identity()};
+};
+
+struct PredictionAssociation {
+  TimedPrediction prediction;
+  double time_difference{};
+};
+
+struct TimedFilterRuntime {
+  double timestamp{};
+  double runtime_ms{};
+};
+
+struct PendingScan {
+  sensor_msgs::msg::PointCloud2::ConstSharedPtr message;
+  std::chrono::steady_clock::time_point callback_start;
+};
+
+constexpr std::array<RejectReason, 10> kRejectReasons = {
+  RejectReason::NotConverged,
+  RejectReason::LowInliers,
+  RejectReason::HighError,
+  RejectReason::TranslationJump,
+  RejectReason::RotationJump,
+  RejectReason::NonfiniteTransform,
+  RejectReason::NoPrediction,
+  RejectReason::TimestampMismatch,
+  RejectReason::EmptyScan,
+  RejectReason::RegistrationException,
+};
+
+class OfflineLocalizerNode : public rclcpp::Node {
+public:
+  OfflineLocalizerNode()
+  : Node("offline_localizer"),
+    map_path_(declare_parameter<std::string>(
+        "map_path",
+        "/home/a/Desktop/shihoon/glim_real/20260814_classroom/results/classroom_150626.ply")),
+    reference_path_(declare_parameter<std::string>(
+        "reference_path",
+        "/home/a/Desktop/shihoon/glim_real/20260814_classroom/results/"
+        "dump_150626_direct_20260814_222719/traj_lidar.txt")),
+    results_directory_(declare_parameter<std::string>(
+        "results_directory",
+        "/home/a/Desktop/shihoon/bunker_localization_ws/results"))
+  {
+    reference_tolerance_ = declare_parameter<double>("reference_timestamp_tolerance", 0.06);
+    prediction_tolerance_ = declare_parameter<double>("prediction_timestamp_tolerance", 0.10);
+    filter_timing_tolerance_ = declare_parameter<double>("filter_timing_tolerance", 0.05);
+    require_filter_timing_ = declare_parameter<bool>("require_filter_timing", false);
+    filter_type_label_ = declare_parameter<std::string>("filter_type_label", "ekf");
+    max_scans_ = declare_parameter<int>("max_scans", 0);
+    if (reference_tolerance_ <= 0.0 || prediction_tolerance_ <= 0.0 ||
+      filter_timing_tolerance_ <= 0.0 || max_scans_ < 0)
+    {
+      throw std::invalid_argument("Timestamp tolerances must be positive and max_scans nonnegative");
+    }
+
+    initialization_mode_ = declare_parameter<std::string>("initialization.mode", "reference");
+    if (initialization_mode_ == "reference") {
+      reference_.emplace(ReferenceTrajectory::load(reference_path_));
+      initial_T_map_lidar_ = reference_->first().T_map_lidar;
+    } else if (initialization_mode_ == "parameter") {
+      const auto translation = declare_parameter<std::vector<double>>(
+        "initialization.translation", std::vector<double>{});
+      const auto rotation = declare_parameter<std::vector<double>>(
+        "initialization.rotation_xyzw", std::vector<double>{});
+      if (translation.size() != 3U || rotation.size() != 4U) {
+        throw std::invalid_argument(
+                "Parameter initialization requires translation[3] and rotation_xyzw[4]");
+      }
+      initial_T_map_lidar_ = makeTransform(
+        translation[0], translation[1], translation[2],
+        rotation[0], rotation[1], rotation[2], rotation[3]);
+    } else {
+      throw std::invalid_argument("initialization.mode must be 'reference' or 'parameter'");
+    }
+
+    time_window_ = TimeWindow(
+      declare_parameter<bool>("time_window.enabled", false),
+      declare_parameter<double>("time_window.origin_timestamp", 0.0),
+      declare_parameter<double>("time_window.start_offset_sec", 0.0),
+      declare_parameter<double>("time_window.end_offset_sec", 0.0));
+    full_bag_mode_ = declare_parameter<bool>("full_bag.enabled", false);
+    const double timing_gap_threshold_sec = declare_parameter<double>(
+      "full_bag.timing_gap_threshold_sec", 1.25);
+    full_bag_replay_rate_ = declare_parameter<double>("full_bag.replay_rate", 1.0);
+    full_bag_expected_lidar_inputs_ = declare_parameter<int>(
+      "full_bag.expected_lidar_inputs", 0);
+    full_bag_eof_topic_ = declare_parameter<std::string>(
+      "full_bag.eof_topic", "/localization/full_bag_eof");
+    if (full_bag_mode_) {
+      if (time_window_.enabled()) {
+        throw std::invalid_argument("full_bag mode requires time_window.enabled=false");
+      }
+      if (max_scans_ != 0) {
+        throw std::invalid_argument("full_bag mode requires max_scans=0");
+      }
+      if (std::abs(full_bag_replay_rate_ - 1.0) > 1.0e-12) {
+        throw std::invalid_argument("full_bag mode requires 1x replay");
+      }
+      if (full_bag_expected_lidar_inputs_ <= 0) {
+        throw std::invalid_argument("full_bag mode requires a positive metadata LiDAR count");
+      }
+      full_bag_state_.emplace(time_window_.originTimestamp(), timing_gap_threshold_sec);
+    }
+
+    RegistrationSettings registration_settings;
+    registration_settings.num_threads = declare_parameter<int>("num_threads", 4);
+    registration_settings.map_voxel_resolution =
+      declare_parameter<double>("map_voxel_resolution", 0.20);
+    registration_settings.scan_voxel_resolution =
+      declare_parameter<double>("scan_voxel_resolution", 0.20);
+    registration_settings.num_neighbors = declare_parameter<int>("num_neighbors", 20);
+    registration_settings.max_correspondence_distance =
+      declare_parameter<double>("max_correspondence_distance", 1.0);
+    registration_settings.max_iterations = declare_parameter<int>("max_iterations", 30);
+    registration_settings.registration_type =
+      declare_parameter<std::string>("registration_type", "GICP");
+
+    const int min_inliers = declare_parameter<int>("min_inliers", 100);
+    quality_settings_.min_inliers = static_cast<std::size_t>(min_inliers);
+    quality_settings_.max_final_error_per_inlier =
+      declare_parameter<double>("max_final_error_per_inlier", 5.0);
+    quality_settings_.max_translation_correction =
+      declare_parameter<double>("max_translation_correction", 1.0);
+    quality_settings_.max_rotation_correction =
+      declare_parameter<double>("max_rotation_correction", 0.5235987755982988);
+    if (min_inliers < 1 || quality_settings_.max_final_error_per_inlier <= 0.0 ||
+      quality_settings_.max_translation_correction <= 0.0 ||
+      quality_settings_.max_rotation_correction <= 0.0)
+    {
+      throw std::invalid_argument("Quality-gate thresholds must be positive");
+    }
+
+    configureBaseToLidar();
+    const LoadedMap loaded_map = loadPlyMap(map_path_);
+    registrar_ = std::make_unique<MapRegistrar>(loaded_map.points, registration_settings);
+    writer_ = std::make_unique<ResultWriter>(results_directory_);
+    latency_writer_ = std::make_unique<LatencyWriter>(
+      results_directory_, time_window_.originTimestamp());
+    raw_map_points_ = loaded_map.raw_point_count;
+    target_map_points_ = registrar_->targetPointCount();
+
+    GicpDiagnosticSettings diagnostic_settings;
+    diagnostic_settings.enabled = declare_parameter<bool>("diagnostics.enabled", false);
+    diagnostic_settings.publish_visualization = declare_parameter<bool>(
+      "diagnostics.publish_visualization", false);
+    diagnostic_settings.publish_accepted_pose = declare_parameter<bool>(
+      "diagnostics.publish_accepted_pose", false);
+    diagnostic_settings.publish_correspondences_every_n_scans = declare_parameter<int>(
+      "diagnostics.publish_correspondences_every_n_scans", 1);
+    const int maximum_lines = declare_parameter<int>(
+      "diagnostics.rviz_max_correspondence_lines", 200);
+    if (maximum_lines < 1) {
+      throw std::invalid_argument("diagnostics.rviz_max_correspondence_lines must be positive");
+    }
+    diagnostic_settings.rviz_max_correspondence_lines =
+      static_cast<std::size_t>(maximum_lines);
+    diagnostic_settings.output_directory = declare_parameter<std::string>(
+      "diagnostics.output_directory", results_directory_);
+    diagnostic_settings.map_frame = declare_parameter<std::string>(
+      "diagnostics.map_frame", "map");
+    diagnostic_settings.localized_lidar_frame = declare_parameter<std::string>(
+      "diagnostics.localized_lidar_frame", "localized_velodyne");
+    diagnostic_settings.selected_timestamp_tolerance_sec = declare_parameter<double>(
+      "diagnostics.selected_timestamp_tolerance_sec", 0.001);
+    diagnostic_settings.hold_selected_role = declare_parameter<std::string>(
+      "diagnostics.hold_selected_role", "");
+    const auto selected_roles = declare_parameter<std::vector<std::string>>(
+      "diagnostics.selected_roles", std::vector<std::string>{});
+    const auto selected_timestamps = declare_parameter<std::vector<double>>(
+      "diagnostics.selected_timestamps", std::vector<double>{});
+    const auto selected_prediction_poses = declare_parameter<std::vector<double>>(
+      "diagnostics.selected_prediction_poses_xyz_xyzw", std::vector<double>{});
+    const auto selected_registration_poses = declare_parameter<std::vector<double>>(
+      "diagnostics.selected_registration_poses_xyz_xyzw", std::vector<double>{});
+    const auto selected_inliers = declare_parameter<std::vector<int64_t>>(
+      "diagnostics.selected_inliers", std::vector<int64_t>{});
+    const auto selected_iterations = declare_parameter<std::vector<int64_t>>(
+      "diagnostics.selected_iterations", std::vector<int64_t>{});
+    const auto selected_final_errors = declare_parameter<std::vector<double>>(
+      "diagnostics.selected_final_errors", std::vector<double>{});
+    const auto selected_registration_runtimes = declare_parameter<std::vector<double>>(
+      "diagnostics.selected_registration_runtimes_ms", std::vector<double>{});
+    if (selected_roles.size() != selected_timestamps.size()) {
+      throw std::invalid_argument(
+              "diagnostics selected_roles and selected_timestamps must have equal length");
+    }
+    const bool audit_states_available = !selected_roles.empty() &&
+      selected_prediction_poses.size() == selected_roles.size() * 7U &&
+      selected_registration_poses.size() == selected_roles.size() * 7U &&
+      selected_inliers.size() == selected_roles.size() &&
+      selected_iterations.size() == selected_roles.size() &&
+      selected_final_errors.size() == selected_roles.size() &&
+      selected_registration_runtimes.size() == selected_roles.size();
+    const bool any_audit_state_values = !selected_prediction_poses.empty() ||
+      !selected_registration_poses.empty() || !selected_inliers.empty() ||
+      !selected_iterations.empty() || !selected_final_errors.empty() ||
+      !selected_registration_runtimes.empty();
+    if (any_audit_state_values && !audit_states_available) {
+      throw std::invalid_argument(
+              "diagnostics selected production audit state vectors have inconsistent sizes");
+    }
+    for (std::size_t index = 0; index < selected_roles.size(); ++index) {
+      SelectedScanSpec selected;
+      selected.role = selected_roles[index];
+      selected.timestamp = selected_timestamps[index];
+      selected.audit_state_available = audit_states_available;
+      if (audit_states_available) {
+        const std::size_t offset = index * 7U;
+        selected.audit_prediction = makeTransform(
+          selected_prediction_poses[offset], selected_prediction_poses[offset + 1U],
+          selected_prediction_poses[offset + 2U], selected_prediction_poses[offset + 3U],
+          selected_prediction_poses[offset + 4U], selected_prediction_poses[offset + 5U],
+          selected_prediction_poses[offset + 6U]);
+        selected.audit_registration = makeTransform(
+          selected_registration_poses[offset], selected_registration_poses[offset + 1U],
+          selected_registration_poses[offset + 2U], selected_registration_poses[offset + 3U],
+          selected_registration_poses[offset + 4U], selected_registration_poses[offset + 5U],
+          selected_registration_poses[offset + 6U]);
+        if (selected_inliers[index] < 0 || selected_iterations[index] < 0) {
+          throw std::invalid_argument("diagnostics selected counts must be nonnegative");
+        }
+        selected.audit_inliers = static_cast<std::size_t>(selected_inliers[index]);
+        selected.audit_iterations = static_cast<std::size_t>(selected_iterations[index]);
+        selected.audit_final_error = selected_final_errors[index];
+        selected.audit_registration_runtime_ms = selected_registration_runtimes[index];
+      }
+      diagnostic_settings.selected_scans.push_back(std::move(selected));
+    }
+    diagnostics_ = std::make_unique<GicpDiagnostics>(
+      this, diagnostic_settings, loaded_map.points, registrar_->targetCloud());
+
+    const std::string cloud_topic = declare_parameter<std::string>(
+      "cloud_topic", "/velodyne_points");
+    const std::string prediction_topic = declare_parameter<std::string>(
+      "prediction_topic", "/localization/odometry/filtered");
+    const std::string filter_timing_topic = declare_parameter<std::string>(
+      "filter_timing_topic", "/localization/filter_timing");
+    expected_lidar_frame_ = declare_parameter<std::string>("expected_lidar_frame", "velodyne");
+
+    cloud_subscription_ = create_subscription<sensor_msgs::msg::PointCloud2>(
+      cloud_topic, rclcpp::QoS(50).reliable(),
+      std::bind(&OfflineLocalizerNode::cloudCallback, this, std::placeholders::_1));
+    prediction_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
+      prediction_topic, rclcpp::QoS(500),
+      std::bind(&OfflineLocalizerNode::predictionCallback, this, std::placeholders::_1));
+    filter_timing_subscription_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
+      filter_timing_topic, rclcpp::QoS(500),
+      std::bind(&OfflineLocalizerNode::filterTimingCallback, this, std::placeholders::_1));
+    if (full_bag_mode_) {
+      bag_eof_subscription_ = create_subscription<std_msgs::msg::Empty>(
+        full_bag_eof_topic_, rclcpp::QoS(1).reliable().durability_volatile(),
+        std::bind(&OfflineLocalizerNode::bagEofCallback, this, std::placeholders::_1));
+    }
+
+    if (reference_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Prepared global target map once: raw=%zu downsampled=%zu; first reference=%.9f",
+        raw_map_points_, target_map_points_, reference_->first().timestamp);
+    } else {
+      const auto& translation = initial_T_map_lidar_.translation();
+      RCLCPP_INFO(
+        get_logger(),
+        "Prepared global target map once: raw=%zu downsampled=%zu; parameter seed="
+        "[%.3f, %.3f, %.3f]",
+        raw_map_points_, target_map_points_, translation.x(), translation.y(), translation.z());
+    }
+    if (time_window_.enabled()) {
+      RCLCPP_INFO(
+        get_logger(), "Using inclusive bag-relative window %.3f..%.3f s from %.9f",
+        time_window_.startOffset(), time_window_.endOffset(), time_window_.originTimestamp());
+    } else if (full_bag_mode_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Full-bag mode: no time window, 1x replay, gap threshold %.3f s; waiting for EOF on %s",
+        full_bag_state_->timingGapThresholdSec(), full_bag_eof_topic_.c_str());
+    }
+  }
+
+  ~OfflineLocalizerNode() override
+  {
+    try {
+      drainPending(true);
+      writeRunSummary();
+    } catch (const std::exception& error) {
+      RCLCPP_ERROR(get_logger(), "Finalization failed: %s", error.what());
+    }
+  }
+
+private:
+  void configureBaseToLidar()
+  {
+    const bool available = declare_parameter<bool>("base_to_lidar.available", false);
+    const bool allow_identity = declare_parameter<bool>(
+      "base_to_lidar.allow_identity_for_phase1_smoke_test", false);
+    const auto translation = declare_parameter<std::vector<double>>(
+      "base_to_lidar.translation", std::vector<double>{});
+    const auto rotation = declare_parameter<std::vector<double>>(
+      "base_to_lidar.rotation_xyzw", std::vector<double>{});
+
+    if (available) {
+      if (translation.size() != 3U || rotation.size() != 4U) {
+        throw std::invalid_argument(
+                "Available base_to_lidar requires translation[3] and rotation_xyzw[4]");
+      }
+      T_base_lidar_ = makeTransform(
+        translation[0], translation[1], translation[2],
+        rotation[0], rotation[1], rotation[2], rotation[3]);
+      prediction_approximation_ = false;
+      return;
+    }
+    if (!allow_identity) {
+      throw std::runtime_error(
+              "base_link->velodyne extrinsic is unavailable. Set an actual transform, or explicitly "
+              "enable the Phase 1 identity approximation");
+    }
+    T_base_lidar_ = Eigen::Isometry3d::Identity();
+    prediction_approximation_ = true;
+    RCLCPP_WARN(
+      get_logger(),
+      "TEST-ONLY APPROXIMATION: T_base_lidar=identity. T_map_lidar can be evaluated, but "
+      "base_link localization/map->odom is not validated");
+  }
+
+  void cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr message)
+  {
+    const auto callback_start = std::chrono::steady_clock::now();
+    // Selected-scan RViz mode deliberately freezes the chosen scan. The bag may continue to
+    // publish, but no later sensor data is admitted to the localization pipeline.
+    if (diagnostics_ && diagnostics_->holdSelectedCaptured()) {
+      return;
+    }
+    ++total_clouds_received_;
+    const double timestamp = stampSeconds(message->header.stamp);
+    if (!std::isfinite(timestamp)) {
+      ++skipped_invalid_timestamp_;
+      return;
+    }
+    if (full_bag_state_) {
+      full_bag_state_->observeLidarTimestamp(timestamp);
+    }
+    const TimeWindowPosition window_position = time_window_.classify(timestamp);
+    if (window_position == TimeWindowPosition::Before) {
+      ++skipped_before_window_;
+      return;
+    }
+    if (window_position == TimeWindowPosition::After) {
+      ++skipped_after_window_;
+      // The first cloud beyond the inclusive end is a deterministic stop signal. Drain any
+      // earlier scan that was waiting for a prediction, but never process this cloud.
+      drainPending(true);
+      finished_ = true;
+      writeRunSummary();
+      RCLCPP_INFO(
+        get_logger(), "Reached bag-relative time-window end %.3f s; shutting down",
+        time_window_.endOffset());
+      rclcpp::shutdown();
+      return;
+    }
+    // GLIM and PointCloud2 stamps differ by sub-millisecond serialization/frame timing. Treat
+    // the scan associated with the first reference pose as the first usable scan; only scans
+    // earlier than the configured association window are unconditionally skipped.
+    if (reference_ && timestamp < reference_->first().timestamp - reference_tolerance_) {
+      ++skipped_before_reference_;
+      return;
+    }
+    pending_scans_.push_back(PendingScan{std::move(message), callback_start});
+    drainPending(false);
+  }
+
+  void predictionCallback(nav_msgs::msg::Odometry::ConstSharedPtr message)
+  {
+    try {
+      const double timestamp = stampSeconds(message->header.stamp);
+      if (!std::isfinite(timestamp)) {
+        return;
+      }
+      if (time_window_.classify(timestamp) != TimeWindowPosition::Inside) {
+        return;
+      }
+      predictions_.push_back(TimedPrediction{timestamp, odometryPose(*message)});
+      while (predictions_.size() > 2000U) {
+        predictions_.pop_front();
+      }
+      drainPending(false);
+    } catch (const std::exception& error) {
+      RCLCPP_WARN(get_logger(), "Ignoring invalid EKF prediction: %s", error.what());
+    }
+  }
+
+  void filterTimingCallback(geometry_msgs::msg::Vector3Stamped::ConstSharedPtr message)
+  {
+    const double timestamp = stampSeconds(message->header.stamp);
+    if (!std::isfinite(timestamp) || !std::isfinite(message->vector.x) ||
+      message->vector.x < 0.0)
+    {
+      return;
+    }
+    filter_runtimes_.push_back(TimedFilterRuntime{timestamp, message->vector.x});
+    while (filter_runtimes_.size() > 2000U) {
+      filter_runtimes_.pop_front();
+    }
+    drainPending(false);
+  }
+
+  void bagEofCallback(std_msgs::msg::Empty::ConstSharedPtr)
+  {
+    if (!full_bag_state_ || full_bag_state_->bagEofReceived()) {
+      return;
+    }
+    pending_scans_at_eof_ = pending_scans_.size();
+    drainPending(true);
+    pending_scans_after_eof_flush_ = pending_scans_.size();
+    full_bag_state_->markBagEofReceived();
+    writeRunSummary();
+    writeFullBagSummary();
+    RCLCPP_INFO(
+      get_logger(),
+      "Full-bag EOF finalized: lidar=%zu processed=%zu accepted=%zu rejected=%zu; "
+      "keeping final RViz state until Ctrl+C",
+      total_clouds_received_, processed_scans_, accepted_scans_, rejected_scans_);
+  }
+
+  std::optional<PredictionAssociation> nearestPrediction(const double timestamp) const
+  {
+    if (predictions_.empty()) {
+      return std::nullopt;
+    }
+    const auto nearest = std::min_element(
+      predictions_.begin(), predictions_.end(),
+      [timestamp](const TimedPrediction& lhs, const TimedPrediction& rhs) {
+        return std::abs(lhs.timestamp - timestamp) < std::abs(rhs.timestamp - timestamp);
+      });
+    return PredictionAssociation{*nearest, std::abs(nearest->timestamp - timestamp)};
+  }
+
+  std::optional<std::pair<double, double>> nearestFilterRuntime(const double timestamp) const
+  {
+    if (filter_runtimes_.empty()) {
+      return std::nullopt;
+    }
+    const auto nearest = std::min_element(
+      filter_runtimes_.begin(), filter_runtimes_.end(),
+      [timestamp](const TimedFilterRuntime& lhs, const TimedFilterRuntime& rhs) {
+        return std::abs(lhs.timestamp - timestamp) < std::abs(rhs.timestamp - timestamp);
+      });
+    const double difference = std::abs(nearest->timestamp - timestamp);
+    if (difference > filter_timing_tolerance_) {
+      return std::nullopt;
+    }
+    return std::make_pair(nearest->runtime_ms, difference);
+  }
+
+  void drainPending(const bool final)
+  {
+    while (!pending_scans_.empty() && !finished_) {
+      const double timestamp = stampSeconds(pending_scans_.front().message->header.stamp);
+      if (!final && (predictions_.empty() || predictions_.back().timestamp < timestamp)) {
+        return;
+      }
+      if (!final && require_filter_timing_ &&
+        (filter_runtimes_.empty() ||
+        filter_runtimes_.back().timestamp < timestamp - prediction_tolerance_))
+      {
+        return;
+      }
+      auto pending = pending_scans_.front();
+      pending_scans_.pop_front();
+      processScan(
+        *pending.message, nearestPrediction(timestamp), pending.callback_start);
+    }
+  }
+
+  void processScan(
+    const sensor_msgs::msg::PointCloud2& message,
+    const std::optional<PredictionAssociation>& association,
+    const std::chrono::steady_clock::time_point core_start)
+  {
+    const double timestamp = stampSeconds(message.header.stamp);
+    LocalizationRecord record;
+    record.timestamp = timestamp;
+    record.prediction = nanTransform();
+    record.registration = nanTransform();
+    record.reference_time_difference = std::numeric_limits<double>::quiet_NaN();
+    record.prediction_time_difference = std::numeric_limits<double>::quiet_NaN();
+    record.filter_runtime_ms = std::numeric_limits<double>::quiet_NaN();
+    record.filter_runtime_time_difference = std::numeric_limits<double>::quiet_NaN();
+    record.correction_translation_m = std::numeric_limits<double>::quiet_NaN();
+    record.correction_roll_rad = std::numeric_limits<double>::quiet_NaN();
+    record.correction_pitch_rad = std::numeric_limits<double>::quiet_NaN();
+    record.correction_yaw_rad = std::numeric_limits<double>::quiet_NaN();
+    record.prediction_approximation = prediction_approximation_;
+
+    std::optional<PoseAssociation> reference_association;
+    if (reference_) {
+      reference_association = reference_->associateNearest(timestamp, reference_tolerance_);
+    }
+    if (reference_association) {
+      record.reference_time_difference = reference_association->absolute_time_difference;
+    }
+
+    if (!association) {
+      record.reject_reason = RejectReason::NoPrediction;
+      finishRecord(record, core_start, message, nullptr, nullptr);
+      return;
+    }
+    record.prediction_time_difference = association->time_difference;
+    const auto filter_runtime = nearestFilterRuntime(association->prediction.timestamp);
+    if (filter_runtime) {
+      record.filter_runtime_ms = filter_runtime->first;
+      record.filter_runtime_time_difference = filter_runtime->second;
+    }
+    if (association->time_difference > prediction_tolerance_) {
+      record.reject_reason = RejectReason::TimestampMismatch;
+      finishRecord(record, core_start, message, nullptr, nullptr);
+      return;
+    }
+
+    if (!anchor_prediction_) {
+      if (reference_) {
+        const double first_reference_difference =
+          std::abs(timestamp - reference_->first().timestamp);
+        if (!reference_association || first_reference_difference > reference_tolerance_) {
+          record.reject_reason = RejectReason::TimestampMismatch;
+          finishRecord(record, core_start, message, nullptr, nullptr);
+          return;
+        }
+      }
+      anchor_prediction_ = association->prediction.T_odom_base;
+      anchor_T_map_lidar_ = initial_T_map_lidar_;
+    }
+
+    // The EKF is only a planar motion source. Anchor every prediction to the last accepted
+    // full-6DoF GICP LiDAR pose so unobserved EKF z/roll/pitch can never accumulate.
+    const PlanarRelativeMotion planar_motion = ekfPlanarRelativeMotion(
+      *anchor_prediction_, association->prediction.T_odom_base);
+    record.prediction = predictMapLidarFromAcceptedPose(
+      anchor_T_map_lidar_, planar_motion);
+    record.prediction_available = true;
+
+    if (message.header.frame_id != expected_lidar_frame_) {
+      RCLCPP_ERROR(
+        get_logger(), "Unexpected cloud frame '%s' (expected '%s')",
+        message.header.frame_id.c_str(), expected_lidar_frame_.c_str());
+      record.reject_reason = RejectReason::RegistrationException;
+      finishRecord(record, core_start, message, nullptr, nullptr);
+      return;
+    }
+
+    std::optional<ExtractedScan> scan;
+    std::optional<RegistrationOutput> registration;
+    try {
+      scan.emplace(extractFiniteXYZ(message));
+      record.input_points = scan->input_point_count;
+      record.finite_points = scan->finite_point_count;
+      if (!scan->points || scan->points->size() < 10U) {
+        record.reject_reason = RejectReason::EmptyScan;
+        finishRecord(
+          record, core_start, message, scan->points ? scan->points.get() : nullptr, nullptr);
+        return;
+      }
+      registration.emplace(registrar_->align(*scan->points, record.prediction));
+      record.registration = registration->T_map_lidar;
+      record.converged = registration->converged;
+      record.iterations = registration->iterations;
+      record.num_inliers = registration->num_inliers;
+      record.final_error = registration->final_error;
+      record.runtime_ms = registration->runtime_ms;
+      record.downsampled_points = registration->source_downsampled_points;
+      record.hessian = registration->hessian;
+      if (isFiniteTransform(registration->T_map_lidar)) {
+        const Eigen::Isometry3d correction = predictionToRegistrationDelta(
+          record.prediction, registration->T_map_lidar);
+        const auto correction_rpy = rollPitchYaw(correction.linear());
+        record.correction_translation_m = correction.translation().norm();
+        record.correction_roll_rad = correction_rpy[0];
+        record.correction_pitch_rad = correction_rpy[1];
+        record.correction_yaw_rad = correction_rpy[2];
+      }
+      record.reject_reason = evaluateRegistration(
+        *registration, record.prediction, quality_settings_);
+      record.accepted = record.reject_reason == RejectReason::None;
+      if (record.accepted) {
+        anchor_prediction_ = association->prediction.T_odom_base;
+        anchor_T_map_lidar_ = registration->T_map_lidar;
+      }
+    } catch (const std::exception& error) {
+      RCLCPP_ERROR(get_logger(), "Registration exception at %.9f: %s", timestamp, error.what());
+      record.reject_reason = RejectReason::RegistrationException;
+    }
+    finishRecord(
+      record, core_start, message,
+      scan && scan->points ? scan->points.get() : nullptr,
+      registration ? &*registration : nullptr);
+  }
+
+  void finishRecord(
+    LocalizationRecord record,
+    const std::chrono::steady_clock::time_point core_start,
+    const sensor_msgs::msg::PointCloud2& raw_message,
+    const small_gicp::PointCloud* finite_source,
+    const RegistrationOutput* registration)
+  {
+    // End the latency interval before disk I/O, correspondence reconstruction, and ROS/RViz
+    // publication. This is the all-scan online localization core Gate.
+    record.core_localization_latency_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - core_start).count();
+    const std::size_t processed_index = processed_scans_;
+    writer_->write(record);
+    latency_writer_->write(record, processed_index);
+    continuous_scan_state_.record(record.accepted, record.registration);
+
+    std::optional<CorrespondenceReconstruction> correspondences;
+    std::optional<RegistrationOutput> correspondence_registration;
+    if (registration && diagnostics_ &&
+      diagnostics_->needsCorrespondences(processed_index, record.timestamp))
+    {
+      correspondence_registration.emplace(
+        diagnostics_->correspondenceRegistration(record.timestamp, *registration));
+      correspondences.emplace(
+        registrar_->reconstructFinalCorrespondences(*correspondence_registration));
+    }
+    if (diagnostics_) {
+      diagnostics_->handleProcessedScan(
+        raw_message, finite_source, record, registration,
+        correspondence_registration ? &*correspondence_registration : nullptr,
+        correspondences ? &*correspondences : nullptr, processed_index);
+    }
+
+    ++processed_scans_;
+    if (record.accepted) {
+      ++accepted_scans_;
+    } else {
+      ++rejected_scans_;
+    }
+    if (full_bag_state_) {
+      full_bag_state_->recordProcessed(
+        record.timestamp, record.accepted, record.reject_reason);
+    }
+    if (std::isfinite(record.filter_runtime_ms)) {
+      ++filter_timing_associated_scans_;
+    }
+    if (max_scans_ > 0 && processed_scans_ >= static_cast<std::size_t>(max_scans_)) {
+      finished_ = true;
+      writeRunSummary();
+      RCLCPP_INFO(get_logger(), "Reached max_scans=%d; shutting down", max_scans_);
+      rclcpp::shutdown();
+    }
+  }
+
+  void writeRunSummary()
+  {
+    if (summary_written_) {
+      return;
+    }
+    std::filesystem::create_directories(results_directory_);
+    std::ofstream output(results_directory_ + "/run_summary.json", std::ios::trunc);
+    output << std::setprecision(17);
+    output << "{\n"
+           << "  \"filter_type\": \"" << filter_type_label_ << "\",\n"
+           << "  \"initialization_mode\": \"" << initialization_mode_ << "\",\n"
+           << "  \"total_clouds_received\": " << total_clouds_received_ << ",\n"
+           << "  \"skipped_before_window\": " << skipped_before_window_ << ",\n"
+           << "  \"skipped_after_window\": " << skipped_after_window_ << ",\n"
+           << "  \"skipped_before_reference\": " << skipped_before_reference_ << ",\n"
+           << "  \"processed_scans\": " << processed_scans_ << ",\n"
+           << "  \"accepted_scans\": " << accepted_scans_ << ",\n"
+           << "  \"rejected_scans\": " << rejected_scans_ << ",\n"
+           << "  \"filter_timing_associated_scans\": "
+           << filter_timing_associated_scans_ << ",\n"
+           << "  \"raw_map_points\": " << raw_map_points_ << ",\n"
+           << "  \"target_map_points\": " << target_map_points_ << ",\n"
+           << "  \"continuous_all_scan_processing\": true,\n"
+           << "  \"candidate_count_used_for_execution\": "
+           << continuous_scan_state_.candidateCountUsedForExecution() << ",\n"
+           << "  \"accepted_path_pose_count\": "
+           << continuous_scan_state_.acceptedPathSize() << ",\n"
+           << "  \"correspondence_method\": "
+           << "\"posthoc_final_transform_correspondence_reconstruction\",\n"
+           << "  \"exact_internal_correspondence_claimed\": false,\n"
+           << "  \"time_window_enabled\": " << (time_window_.enabled() ? "true" : "false")
+           << ",\n"
+           << "  \"time_window_origin_timestamp\": " << time_window_.originTimestamp() << ",\n"
+           << "  \"time_window_start_offset_sec\": " << time_window_.startOffset() << ",\n"
+           << "  \"time_window_end_offset_sec\": " << time_window_.endOffset() << ",\n"
+           << "  \"prediction_uses_identity_base_to_lidar_approximation\": "
+           << (prediction_approximation_ ? "true" : "false") << ",\n"
+           << "  \"prediction_policy\": "
+           << "\"accepted_gicp_6dof_plus_ekf_planar_delta\",\n"
+           << "  \"output_frame\": \"T_map_lidar\",\n"
+           << "  \"map_base_output_available\": "
+           << (prediction_approximation_ ? "false" : "true") << "\n"
+           << "}\n";
+    summary_written_ = true;
+  }
+
+  void writeFullBagSummary()
+  {
+    if (!full_bag_state_ || full_bag_summary_written_) {
+      return;
+    }
+    std::filesystem::create_directories(results_directory_);
+    std::ofstream output(results_directory_ + "/full_bag_summary.json", std::ios::trunc);
+    if (!output) {
+      throw std::runtime_error("Failed to open full_bag_summary.json");
+    }
+    output << std::setprecision(17);
+    const auto writeOptional = [&output](const std::optional<double>& value) {
+        if (value) {
+          output << *value;
+        } else {
+          output << "null";
+        }
+      };
+    const auto relative = [this](const std::optional<double>& timestamp) {
+        return timestamp ? std::optional<double>(
+          *timestamp - full_bag_state_->bagOriginTimestamp()) : std::nullopt;
+    };
+    const std::size_t skipped_total = skipped_before_window_ + skipped_after_window_ +
+      skipped_before_reference_ + skipped_invalid_timestamp_;
+    const bool all_bag_lidar_inputs_received = total_clouds_received_ ==
+      static_cast<std::size_t>(full_bag_expected_lidar_inputs_);
+    output << "{\n"
+           << "  \"mode\": \"full_bag\",\n"
+           << "  \"replay_rate\": " << full_bag_replay_rate_ << ",\n"
+           << "  \"time_window_enabled\": false,\n"
+           << "  \"bag_eof_received\": "
+           << (full_bag_state_->bagEofReceived() ? "true" : "false") << ",\n"
+           << "  \"process_survived_to_bag_eof\": "
+           << (full_bag_state_->bagEofReceived() ? "true" : "false") << ",\n"
+           << "  \"crash_detected\": false,\n"
+           << "  \"bag_metadata_lidar_inputs\": "
+           << full_bag_expected_lidar_inputs_ << ",\n"
+           << "  \"total_lidar_inputs\": " << total_clouds_received_ << ",\n"
+           << "  \"all_bag_lidar_inputs_received\": "
+           << (all_bag_lidar_inputs_received ? "true" : "false")
+           << ",\n"
+           << "  \"finite_timestamp_lidar_inputs\": "
+           << full_bag_state_->lidarTimestampCount() << ",\n"
+           << "  \"processed_scans\": " << processed_scans_ << ",\n"
+           << "  \"accepted_scans\": " << accepted_scans_ << ",\n"
+           << "  \"rejected_scans\": " << rejected_scans_ << ",\n"
+           << "  \"skipped_scans\": " << skipped_total << ",\n"
+           << "  \"skipped_before_window\": " << skipped_before_window_ << ",\n"
+           << "  \"skipped_after_window\": " << skipped_after_window_ << ",\n"
+           << "  \"skipped_before_reference\": " << skipped_before_reference_ << ",\n"
+           << "  \"skipped_invalid_timestamp\": " << skipped_invalid_timestamp_ << ",\n"
+           << "  \"pending_scans_at_eof\": " << pending_scans_at_eof_ << ",\n"
+           << "  \"pending_scans_after_eof_flush\": "
+           << pending_scans_after_eof_flush_ << ",\n"
+           << "  \"all_lidar_inputs_accounted\": "
+           << (total_clouds_received_ == processed_scans_ + skipped_total ? "true" : "false")
+           << ",\n"
+           << "  \"reject_reason_counts\": {\n";
+    for (std::size_t index = 0; index < kRejectReasons.size(); ++index) {
+      const auto reason = kRejectReasons[index];
+      output << "    \"" << toString(reason) << "\": "
+             << full_bag_state_->rejectCount(reason)
+             << (index + 1U == kRejectReasons.size() ? "\n" : ",\n");
+    }
+    output << "  },\n"
+           << "  \"first_timing_gap\": {\n"
+           << "    \"detected\": "
+           << (full_bag_state_->firstTimingGapDetected() ? "true" : "false") << ",\n"
+           << "    \"threshold_sec\": "
+           << full_bag_state_->timingGapThresholdSec() << ",\n"
+           << "    \"previous_timestamp\": ";
+    writeOptional(full_bag_state_->firstGapPreviousTimestamp());
+    output << ",\n    \"current_timestamp\": ";
+    writeOptional(full_bag_state_->firstGapCurrentTimestamp());
+    output << ",\n    \"previous_bag_relative_sec\": ";
+    writeOptional(relative(full_bag_state_->firstGapPreviousTimestamp()));
+    output << ",\n    \"current_bag_relative_sec\": ";
+    writeOptional(relative(full_bag_state_->firstGapCurrentTimestamp()));
+    output << ",\n    \"duration_sec\": ";
+    writeOptional(full_bag_state_->firstGapDurationSec());
+    output << "\n  },\n"
+           << "  \"after_first_timing_gap\": {\n"
+           << "    \"processed_scans\": "
+           << full_bag_state_->processedAfterFirstGap() << ",\n"
+           << "    \"accepted_scans\": "
+           << full_bag_state_->acceptedAfterFirstGap() << ",\n"
+           << "    \"rejected_scans\": "
+           << full_bag_state_->rejectedAfterFirstGap() << ",\n"
+           << "    \"reject_reason_counts\": {\n";
+    for (std::size_t index = 0; index < kRejectReasons.size(); ++index) {
+      const auto reason = kRejectReasons[index];
+      output << "      \"" << toString(reason) << "\": "
+             << full_bag_state_->rejectCountAfterFirstGap(reason)
+             << (index + 1U == kRejectReasons.size() ? "\n" : ",\n");
+    }
+    output << "    },\n"
+           << "    \"first_accepted_timestamp\": ";
+    writeOptional(full_bag_state_->firstAcceptedAfterGapTimestamp());
+    output << ",\n    \"first_accepted_bag_relative_sec\": ";
+    writeOptional(relative(full_bag_state_->firstAcceptedAfterGapTimestamp()));
+    output << ",\n    \"recovered\": "
+           << (full_bag_state_->recoveredAfterFirstGap() ? "true" : "false")
+           << "\n  },\n"
+           << "  \"final_accepted_timestamp\": ";
+    writeOptional(full_bag_state_->finalAcceptedTimestamp());
+    output << ",\n  \"final_accepted_bag_relative_sec\": ";
+    writeOptional(relative(full_bag_state_->finalAcceptedTimestamp()));
+    output << ",\n  \"last_lidar_timestamp\": ";
+    writeOptional(full_bag_state_->lastLidarTimestamp());
+    output << ",\n  \"last_lidar_bag_relative_sec\": ";
+    writeOptional(relative(full_bag_state_->lastLidarTimestamp()));
+    output << "\n}\n";
+    full_bag_summary_written_ = true;
+  }
+
+  std::string map_path_;
+  std::string reference_path_;
+  std::string results_directory_;
+  std::optional<ReferenceTrajectory> reference_;
+  std::string initialization_mode_;
+  Eigen::Isometry3d initial_T_map_lidar_{Eigen::Isometry3d::Identity()};
+  TimeWindow time_window_;
+  double reference_tolerance_{};
+  double prediction_tolerance_{};
+  double filter_timing_tolerance_{};
+  bool require_filter_timing_{false};
+  std::string filter_type_label_;
+  int max_scans_{};
+  bool full_bag_mode_{false};
+  double full_bag_replay_rate_{1.0};
+  int full_bag_expected_lidar_inputs_{};
+  std::string full_bag_eof_topic_;
+  std::string expected_lidar_frame_;
+  QualityGateSettings quality_settings_;
+  Eigen::Isometry3d T_base_lidar_{Eigen::Isometry3d::Identity()};
+  bool prediction_approximation_{false};
+
+  std::unique_ptr<MapRegistrar> registrar_;
+  std::unique_ptr<ResultWriter> writer_;
+  std::unique_ptr<LatencyWriter> latency_writer_;
+  std::unique_ptr<GicpDiagnostics> diagnostics_;
+  ContinuousScanState continuous_scan_state_;
+  std::optional<FullBagRunState> full_bag_state_;
+  std::deque<TimedPrediction> predictions_;
+  std::deque<TimedFilterRuntime> filter_runtimes_;
+  std::deque<PendingScan> pending_scans_;
+  std::optional<Eigen::Isometry3d> anchor_prediction_;
+  Eigen::Isometry3d anchor_T_map_lidar_{Eigen::Isometry3d::Identity()};
+
+  std::size_t total_clouds_received_{0};
+  std::size_t skipped_before_window_{0};
+  std::size_t skipped_after_window_{0};
+  std::size_t skipped_before_reference_{0};
+  std::size_t skipped_invalid_timestamp_{0};
+  std::size_t processed_scans_{0};
+  std::size_t accepted_scans_{0};
+  std::size_t rejected_scans_{0};
+  std::size_t filter_timing_associated_scans_{0};
+  std::size_t raw_map_points_{0};
+  std::size_t target_map_points_{0};
+  std::size_t pending_scans_at_eof_{0};
+  std::size_t pending_scans_after_eof_flush_{0};
+  bool finished_{false};
+  bool summary_written_{false};
+  bool full_bag_summary_written_{false};
+
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscription_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr prediction_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr
+    filter_timing_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr bag_eof_subscription_;
+};
+
+}  // namespace
+}  // namespace bunker_offline_localization
+
+int main(int argc, char** argv)
+{
+  rclcpp::init(argc, argv);
+  try {
+    rclcpp::spin(std::make_shared<bunker_offline_localization::OfflineLocalizerNode>());
+  } catch (const std::exception& error) {
+    RCLCPP_FATAL(rclcpp::get_logger("offline_localizer"), "%s", error.what());
+    rclcpp::shutdown();
+    return 1;
+  }
+  rclcpp::shutdown();
+  return 0;
+}

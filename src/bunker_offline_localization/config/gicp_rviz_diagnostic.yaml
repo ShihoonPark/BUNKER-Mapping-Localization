@@ -1,0 +1,11 @@
+offline_localizer:
+  ros__parameters:
+    diagnostics:
+      enabled: true
+      publish_visualization: true
+      publish_correspondences_every_n_scans: 1
+      rviz_max_correspondence_lines: 200
+      output_directory: /home/a/Desktop/shihoon/bunker_localization_ws/results/gicp_correspondence_rviz_diagnostic
+      map_frame: map
+      localized_lidar_frame: localized_velodyne
+      selected_timestamp_tolerance_sec: 0.001
